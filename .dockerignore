@@ -1,0 +1,30 @@
+# Git
+.git/
+.gitignore
+
+# Python environments
+**/.venv/
+**/venv/
+backend/multi/
+
+# Python cache
+**/__pycache__/
+**/*.py[cod]
+**/*.log
+
+# Environment secrets
+backend/.env
+backend/.env.*
+
+# Frontend dependencies
+**/node_modules/
+**/.next/
+
+# Testing and tooling
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
