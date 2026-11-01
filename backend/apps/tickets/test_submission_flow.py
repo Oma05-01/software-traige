@@ -4,7 +4,7 @@ from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
 from apps.agents.models import AgentExecution
 from apps.events.models import WorkflowEvent
-
+from apps.reviews.models import ReviewRequest
 from django.test import override_settings
 
 @override_settings(
@@ -30,7 +30,7 @@ class TicketSubmissionWorkflowTests(APITestCase):
 
         return response
 
-    def test_bug_submission_executes_receptionist(self):
+    def test_bug_submission_executes_agent_pipeline_and_awaits_review(self):
         payload = {
             "title": "PDF upload failure",
             "description": (
@@ -51,18 +51,63 @@ class TicketSubmissionWorkflowTests(APITestCase):
 
         workflow = WorkflowRun.objects.get(ticket=ticket)
 
-        execution = AgentExecution.objects.get(
+        # Retrieve each agent execution.
+        receptionist_execution = AgentExecution.objects.get(
             workflow_run=workflow,
             agent_type=AgentExecution.AgentType.RECEPTIONIST,
         )
 
-        self.assertTrue(execution.celery_task_id)
-
-        self.assertEqual(
-            execution.status,
-            AgentExecution.Status.SUCCEEDED,
+        debugger_execution = AgentExecution.objects.get(
+            workflow_run=workflow,
+            agent_type=AgentExecution.AgentType.DEBUGGER,
         )
 
+        support_rep_execution = AgentExecution.objects.get(
+            workflow_run=workflow,
+            agent_type=AgentExecution.AgentType.SUPPORT_REP,
+        )
+
+        # Verify each agent has its own Celery task.
+        self.assertTrue(receptionist_execution.celery_task_id)
+        self.assertTrue(debugger_execution.celery_task_id)
+        self.assertTrue(support_rep_execution.celery_task_id)
+
+        self.assertEqual(
+            len({
+                receptionist_execution.celery_task_id,
+                debugger_execution.celery_task_id,
+                support_rep_execution.celery_task_id,
+            }),
+            3,
+        )
+
+        review_request = ReviewRequest.objects.get(
+        agent_execution=support_rep_execution,
+        action_type=ReviewRequest.ActionType.SEND_SUPPORT_RESPONSE,
+        )
+
+        self.assertEqual(
+            review_request.status,
+            ReviewRequest.Status.PENDING,
+        )
+
+        self.assertEqual(
+            review_request.workflow_run,
+            workflow,
+        )
+
+        # Verify successful execution.
+        for execution in [
+            receptionist_execution,
+            debugger_execution,
+            support_rep_execution,
+        ]:
+            self.assertEqual(
+                execution.status,
+                AgentExecution.Status.SUCCEEDED,
+            )
+
+        # Verify Receptionist classification.
         self.assertEqual(
             ticket.category,
             Ticket.Category.BUG,
@@ -73,19 +118,43 @@ class TicketSubmissionWorkflowTests(APITestCase):
             Ticket.Priority.HIGH,
         )
 
+        # Verify Support Rep created a draft, not a sent message.
+        draft = support_rep_execution.output_payload
+
+        self.assertEqual(
+            draft["draft_status"],
+            "pending_human_review",
+        )
+
+        self.assertTrue(
+            draft["requires_human_review"]
+        )
+
+        self.assertFalse(
+            draft["external_send_authorized"]
+        )
+
+        self.assertTrue(
+            draft["draft_response"]
+        )
+
+        # Refresh objects to verify final persisted state.
+        workflow.refresh_from_db()
+        ticket.refresh_from_db()
+
         self.assertEqual(
             workflow.status,
-            WorkflowRun.Status.RUNNING,
+            WorkflowRun.Status.AWAITING_REVIEW,
         )
 
         self.assertEqual(
             workflow.current_stage,
-            WorkflowRun.Stage.DEBUGGER,
+            WorkflowRun.Stage.HUMAN_REVIEW,
         )
 
         self.assertEqual(
             ticket.status,
-            Ticket.Status.IN_PROGRESS,
+            Ticket.Status.AWAITING_REVIEW,
         )
 
         self.assertEqual(

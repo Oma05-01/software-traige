@@ -10,4 +10,6 @@ urlpatterns = [
 
      # Ticket management
     path("api/tickets/", include("apps.tickets.urls")),
+
+    path("api/reviews/", include("apps.reviews.urls")),
 ]

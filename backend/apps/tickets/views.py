@@ -54,11 +54,6 @@ class TicketListCreateView(generics.ListCreateAPIView):
 
             start_ticket_workflow(ticket.id)
 
-        # Refresh after the transaction commits.
-        # In a normal request, the on_commit callback has
-        # now executed and may have updated the ticket.
-        ticket.refresh_from_db()
-
 
 class TicketDetailView(generics.RetrieveAPIView):
     """
