@@ -27,6 +27,7 @@ class ReviewRequest(models.Model):
         PENDING = "pending", "Pending review"
         APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
+        CHANGES_REQUESTED = "changes_requested", "Changes requested"
 
     id = models.UUIDField(
         primary_key=True,
@@ -39,6 +40,8 @@ class ReviewRequest(models.Model):
         on_delete=models.PROTECT,
         related_name="review_requests",
     )
+
+    revision_number = models.PositiveIntegerField(default=1)
 
     agent_execution = models.ForeignKey(
         "agents.AgentExecution",
@@ -95,7 +98,11 @@ class ReviewRequest(models.Model):
                     )
                     |
                     Q(
-                        status__in=["approved", "rejected"],
+                        status__in=[
+                            "changes_requested",
+                            "approved",
+                            "rejected",
+                        ],
                         reviewed_by__isnull=False,
                         reviewed_at__isnull=False,
                     )

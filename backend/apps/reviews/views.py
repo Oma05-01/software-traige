@@ -9,14 +9,18 @@ from rest_framework.views import APIView
 
 from apps.reviews.models import ReviewRequest
 from apps.reviews.serializers import (
+    ReviewChangesRequestSerializer,
     ReviewDecisionSerializer,
     ReviewProposalUpdateSerializer,
     ReviewRequestSerializer,
 )
+
 from apps.reviews.services import (
     InvalidReviewAction,
     approve_review_request,
     reject_review_request,
+    request_review_changes,
+    revise_review_request,
     update_review_proposal,
 )
 
@@ -201,3 +205,61 @@ class RejectReviewRequestView(APIView):
             ReviewRequestSerializer(rejected).data,
             status=status.HTTP_200_OK,
         )
+
+class RequestReviewChangesView(APIView):
+    """Ask for corrections without rejecting the proposed action."""
+
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, pk):
+        review_request = get_review_or_404(pk)
+
+        serializer = ReviewChangesRequestSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            updated = request_review_changes(
+                review_request.id,
+                request.user,
+                serializer.validated_data["decision_note"],
+            )
+
+        except InvalidReviewAction as exc:
+            handle_review_error(exc)
+
+        return Response(
+            ReviewRequestSerializer(updated).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class ReviseReviewRequestView(APIView):
+    """Submit a revised proposal after changes have been requested."""
+
+    permission_classes = [IsAdminUser]
+
+    def patch(self, request, pk):
+        review_request = get_review_or_404(pk)
+
+        serializer = ReviewProposalUpdateSerializer(
+            data=request.data,
+        )
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            updated = revise_review_request(
+                review_request.id,
+                request.user,
+                serializer.validated_data["proposed_payload"],
+            )
+
+        except InvalidReviewAction as exc:
+            handle_review_error(exc)
+
+        return Response(
+            ReviewRequestSerializer(updated).data,
+            status=status.HTTP_200_OK,
+        )
+

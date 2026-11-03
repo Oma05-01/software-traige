@@ -18,6 +18,7 @@ class ReviewRequestSerializer(serializers.ModelSerializer):
             "decision_note",
             "created_at",
             "updated_at",
+            "revision_number",
         ]
         read_only_fields = fields
 
@@ -38,6 +39,14 @@ class ReviewDecisionSerializer(serializers.Serializer):
     decision_note = serializers.CharField(
         required=False,
         allow_blank=True,
+        max_length=2000,
+        trim_whitespace=True,
+    )
+
+class ReviewChangesRequestSerializer(serializers.Serializer):
+    decision_note = serializers.CharField(
+        required=True,
+        allow_blank=False,
         max_length=2000,
         trim_whitespace=True,
     )

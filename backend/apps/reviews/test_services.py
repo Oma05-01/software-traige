@@ -15,6 +15,8 @@ from apps.reviews.services import (
     create_review_request,
     reject_review_request,
     update_review_proposal,
+    revise_review_request,
+    request_review_changes,
 )
 from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
@@ -359,3 +361,146 @@ class ReviewRequestServiceTests(TestCase):
             self.workflow.current_stage,
             WorkflowRun.Stage.HUMAN_REVIEW,
         )
+
+    def test_staff_can_request_changes(self):
+        review = self.create_request()
+
+        updated = request_review_changes(
+            review.id,
+            self.reviewer,
+            "Please clarify the technical explanation.",
+        )
+
+        self.assertEqual(
+            updated.status,
+            ReviewRequest.Status.CHANGES_REQUESTED,
+        )
+
+        self.assertEqual(
+            updated.reviewed_by,
+            self.reviewer,
+        )
+
+        self.assertEqual(
+            updated.decision_note,
+            "Please clarify the technical explanation.",
+        )
+
+        self.assertIsNotNone(updated.reviewed_at)
+
+
+    def test_changes_requested_review_can_be_resubmitted(self):
+        review = self.create_request()
+
+        request_review_changes(
+            review.id,
+            self.reviewer,
+            "Please clarify the response.",
+        )
+
+        revised_payload = review.proposed_payload.copy()
+
+        revised_payload["draft_response"] = (
+            "Thank you for reporting this issue. "
+            "We have received your report and need one "
+            "additional detail to investigate."
+        )
+
+        updated = revise_review_request(
+            review.id,
+            self.reviewer,
+            revised_payload,
+        )
+
+        self.assertEqual(
+            updated.status,
+            ReviewRequest.Status.PENDING,
+        )
+
+        self.assertEqual(updated.revision_number, 2)
+
+        self.assertIsNone(updated.reviewed_by)
+        self.assertIsNone(updated.reviewed_at)
+        self.assertEqual(updated.decision_note, "")
+
+        self.assertEqual(
+            updated.proposed_payload["draft_response"],
+            revised_payload["draft_response"],
+        )
+
+
+    def test_revision_history_preserves_previous_proposal(self):
+        review = self.create_request()
+
+        original_payload = review.proposed_payload.copy()
+
+        request_review_changes(
+            review.id,
+            self.reviewer,
+            "Please revise the wording.",
+        )
+
+        revised_payload = original_payload.copy()
+        revised_payload["draft_response"] = (
+            "This is the revised support response."
+        )
+
+        revise_review_request(
+            review.id,
+            self.reviewer,
+            revised_payload,
+        )
+
+        event = WorkflowEvent.objects.get(
+            workflow_run=self.workflow,
+            event_type="review.revision_submitted",
+        )
+
+        self.assertEqual(
+            event.payload["previous_proposed_payload"],
+            original_payload,
+        )
+
+        self.assertEqual(
+            event.payload["proposed_payload"],
+            revised_payload,
+        )
+
+        self.assertEqual(
+            event.payload["previous_decision"]["decision_note"],
+            "Please revise the wording.",
+        )
+
+        self.assertEqual(
+            event.payload["revision_number"],
+            2,
+        )
+
+
+    def test_rejected_review_cannot_be_resubmitted(self):
+        review = self.create_request()
+
+        reject_review_request(
+            review.id,
+            self.reviewer,
+            "The proposed action is not appropriate.",
+        )
+
+        with self.assertRaises(InvalidReviewAction):
+            revise_review_request(
+                review.id,
+                self.reviewer,
+                self.support_response_payload(),
+            )
+
+
+    def test_changes_request_requires_a_note(self):
+        review = self.create_request()
+
+        with self.assertRaises(InvalidReviewAction):
+            request_review_changes(
+                review.id,
+                self.reviewer,
+                "   ",
+            )
+            

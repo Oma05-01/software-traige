@@ -96,6 +96,13 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
+CSRF_TRUSTED_ORIGINS = env.list(
+    "CSRF_TRUSTED_ORIGINS",
+    default=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+)
 
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
@@ -163,6 +170,56 @@ REST_FRAMEWORK = {
         "ticket_submission": "10/hour",
     },
 }
+
+# LLM configuration
+
+LLM_PROVIDER = env(
+    "LLM_PROVIDER",
+    default="groq",
+).lower()
+
+GROQ_API_KEY = env(
+    "GROQ_API_KEY",
+    default="",
+)
+
+GROQ_MODEL = env(
+    "GROQ_MODEL",
+    default="openai/gpt-oss-20b",
+)
+
+LLM_TIMEOUT_SECONDS = env.int(
+    "LLM_TIMEOUT_SECONDS",
+    default=45,
+)
+
+LLM_MAX_RETRIES = env.int(
+    "LLM_MAX_RETRIES",
+    default=1,
+)
+
+LLM_MAX_COMPLETION_TOKENS = env.int(
+    "LLM_MAX_COMPLETION_TOKENS",
+    default=2048,
+)
+
+# Selects the implementation used by Support Rep.
+# Supported values: deterministic, llm
+
+SUPPORT_REP_MODE = env(
+    "SUPPORT_REP_MODE",
+    default="deterministic",
+).lower()
+
+RECEPTIONIST_MODE = env(
+    "RECEPTIONIST_MODE",
+    default="deterministic",
+).lower()
+
+DEBUGGER_MODE = env(
+    "DEBUGGER_MODE",
+    default="deterministic",
+).lower()
 
 # Celery configuration
 

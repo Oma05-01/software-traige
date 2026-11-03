@@ -6,6 +6,8 @@ from apps.reviews.views import (
     ReviewProposalUpdateView,
     ReviewRequestDetailView,
     ReviewRequestListView,
+    RequestReviewChangesView,
+    ReviseReviewRequestView,
 )
 
 
@@ -36,5 +38,15 @@ urlpatterns = [
         "<uuid:pk>/reject/",
         RejectReviewRequestView.as_view(),
         name="review-reject",
+    ),
+    path(
+    "<uuid:pk>/request-changes/",
+    RequestReviewChangesView.as_view(),
+    name="review-request-changes",
+    ),
+    path(
+        "<uuid:pk>/revise/",
+        ReviseReviewRequestView.as_view(),
+        name="review-revise",
     ),
 ]

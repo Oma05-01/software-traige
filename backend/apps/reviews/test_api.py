@@ -300,3 +300,96 @@ class ReviewRequestAPITests(APITestCase):
             response.status_code,
             status.HTTP_400_BAD_REQUEST,
         )
+
+    def test_staff_can_request_changes(self):
+        self.authenticate_staff()
+
+        url = reverse(
+            "reviews:review-request-changes",
+            kwargs={"pk": self.review.id},
+        )
+
+        response = self.client.post(
+            url,
+            {
+                "decision_note": (
+                    "Please clarify the technical explanation."
+                )
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        self.assertEqual(
+            response.data["status"],
+            ReviewRequest.Status.CHANGES_REQUESTED,
+        )
+
+
+def test_staff_can_resubmit_revised_proposal(self):
+    self.authenticate_staff()
+
+    changes_url = reverse(
+        "reviews:review-request-changes",
+        kwargs={"pk": self.review.id},
+    )
+
+    changes_response = self.client.post(
+        changes_url,
+        {
+            "decision_note": "Please improve the response."
+        },
+        format="json",
+    )
+
+    self.assertEqual(
+        changes_response.status_code,
+        status.HTTP_200_OK,
+    )
+
+    revised_payload = self.review.proposed_payload.copy()
+
+    revised_payload["draft_response"] = (
+        "Thank you for reporting this issue. "
+        "We have updated our response and would "
+        "like to clarify one additional detail."
+    )
+
+    revise_url = reverse(
+        "reviews:review-revise",
+        kwargs={"pk": self.review.id},
+    )
+
+    response = self.client.patch(
+        revise_url,
+        {"proposed_payload": revised_payload},
+        format="json",
+    )
+
+    self.assertEqual(
+        response.status_code,
+        status.HTTP_200_OK,
+    )
+
+    self.assertEqual(
+        response.data["status"],
+        ReviewRequest.Status.PENDING,
+    )
+
+    self.assertEqual(
+        response.data["revision_number"],
+        2,
+    )
+
+    self.assertIsNone(
+        response.data["reviewed_by"],
+    )
+
+    self.assertEqual(
+        response.data["decision_note"],
+        "",
+    )

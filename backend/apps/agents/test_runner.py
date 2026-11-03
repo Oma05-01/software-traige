@@ -3,6 +3,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from apps.tickets.models import Ticket
+from django.test import override_settings
 from apps.workflow.models import WorkflowRun
 from apps.workflow.services import (
     create_workflow_for_ticket,
@@ -13,7 +14,7 @@ from apps.events.models import WorkflowEvent
 from .models import AgentExecution
 from .runner import run_receptionist
 
-
+@override_settings(RECEPTIONIST_MODE="deterministic")
 class ReceptionistRunnerTests(TestCase):
 
     def setUp(self):

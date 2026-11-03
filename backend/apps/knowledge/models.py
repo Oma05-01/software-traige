@@ -50,6 +50,16 @@ class KnowledgeDocument(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+        indexes = [
+            GinIndex(
+                SearchVector(
+                    "title",
+                    config="english",
+                ),
+                name="knowledge_doc_title_fts_idx",
+            ),
+        ]
+
     def __str__(self):
         return self.title
 

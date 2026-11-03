@@ -1,7 +1,7 @@
 
 import re
 
-from apps.knowledge.services import search_knowledge
+from apps.knowledge.services import search_knowledge, search_knowledge_batch
 
 
 STOP_WORDS = {
@@ -167,6 +167,8 @@ def extract_search_terms(ticket, max_terms=12):
 
     if max_terms < 0:
         raise ValueError("max_terms cannot be negative.")
+    if max_terms == 0:
+        return []
 
     terms = []
     seen = set()
@@ -208,6 +210,8 @@ def extract_search_phrases(ticket, max_phrases=6):
 
     if max_phrases < 0:
         raise ValueError("max_phrases cannot be negative.")
+    if max_phrases == 0:
+        return []
 
     phrases = []
     seen = set()
@@ -263,18 +267,63 @@ def extract_search_phrases(ticket, max_phrases=6):
 
     return phrases
 
+def assess_retrieval_relevance(candidate, total_search_terms):
+    """
+    Assess how strongly a retrieved chunk matches the ticket
+    through its actual content.
+
+    This evaluates retrieval relevance, not whether the
+    document proves a technical root cause.
+    """
+
+    content_terms = candidate["matched_terms_in_content"]
+    content_phrases = candidate["matched_phrases_in_content"]
+
+    term_count = len(content_terms)
+    phrase_count = len(content_phrases)
+
+    term_coverage = (
+        term_count / total_search_terms
+        if total_search_terms
+        else 0.0
+    )
+
+    if phrase_count >= 2 and term_count >= 3:
+        level = "strong"
+
+    elif (
+        phrase_count >= 1
+        or (
+            term_count >= 3
+            and term_coverage >= 0.25
+        )
+    ):
+        level = "moderate"
+
+    else:
+        level = "weak"
+
+    return {
+        "level": level,
+        "content_term_matches": term_count,
+        "content_phrase_matches": phrase_count,
+        "title_term_matches": len(
+            candidate["matched_terms_in_title"]
+        ),
+        "title_phrase_matches": len(
+            candidate["matched_phrases_in_title"]
+        ),
+        "term_coverage": round(term_coverage, 4),
+    }
 
 def retrieve_evidence(ticket, max_results=5):
     """
-    Retrieve supporting knowledge using individual terms and phrases.
+    Retrieve documentation using batched term and phrase searches.
 
-    Evidence is ranked using:
-        1. Number of matched phrases.
-        2. Number of matched individual terms.
-        3. PostgreSQL search relevance.
+    Retrieved candidates are assessed using content-level matches.
 
-    Phrase matches receive additional weight because they generally
-    provide a more specific retrieval signal.
+    Only moderate and strong retrieval matches are promoted to
+    documented_evidence.
     """
 
     if not isinstance(max_results, int) or isinstance(max_results, bool):
@@ -288,80 +337,74 @@ def retrieve_evidence(ticket, max_results=5):
     search_terms = extract_search_terms(ticket)
     search_phrases = extract_search_phrases(ticket)
 
-    retrieved = {}
+    queries = (
+        [(term, "term") for term in search_terms]
+        + [(phrase, "phrase") for phrase in search_phrases]
+    )
 
-    def collect_results(query, query_type):
-        chunks = search_knowledge(
-            query,
-            limit=5,
+    if queries:
+        candidates = search_knowledge_batch(
+            queries,
+            limit=min(100, max(20, max_results * 10)),
+        )
+    else:
+        candidates = []
+
+    ranked = []
+
+    for candidate in candidates:
+
+        content_terms = candidate[
+            "matched_terms_in_content"
+        ]
+
+        content_phrases = candidate[
+            "matched_phrases_in_content"
+        ]
+
+        title_terms = candidate[
+            "matched_terms_in_title"
+        ]
+
+        title_phrases = candidate[
+            "matched_phrases_in_title"
+        ]
+
+        match_score = (
+            len(content_terms)
+            + (2 * len(content_phrases))
         )
 
-        for chunk in chunks:
-
-            chunk_id = str(chunk.id)
-
-            if chunk_id not in retrieved:
-                retrieved[chunk_id] = {
-                    "chunk": chunk,
-                    "matched_terms": set(),
-                    "matched_phrases": set(),
-                    "search_rank": 0.0,
-                }
-
-            entry = retrieved[chunk_id]
-
-            if query_type == "term":
-                entry["matched_terms"].add(query)
-
-            elif query_type == "phrase":
-                entry["matched_phrases"].add(query)
-
-            entry["search_rank"] = max(
-                entry["search_rank"],
-                float(chunk.rank),
-            )
-
-    # Search individual terms.
-    for term in search_terms:
-        collect_results(term, "term")
-
-    # Search quoted phrases using PostgreSQL web-search syntax.
-    for phrase in search_phrases:
-        collect_results(
-            f'"{phrase}"',
-            "phrase",
+        relevance = assess_retrieval_relevance(
+            candidate,
+            len(search_terms),
         )
 
-    # Calculate a score for each retrieved chunk.
-    for entry in retrieved.values():
+        ranked.append({
+            **candidate,
+            "match_score": match_score,
+            "retrieval_relevance": relevance,
+        })
 
-        term_count = len(entry["matched_terms"])
-        phrase_count = len(entry["matched_phrases"])
-
-        entry["match_score"] = (
-            term_count + (2 * phrase_count)
-        )
-
-    ranked = sorted(
-        retrieved.values(),
+    ranked.sort(
         key=lambda item: (
             -item["match_score"],
-            -len(item["matched_phrases"]),
-            -len(item["matched_terms"]),
+            -len(item["matched_phrases_in_content"]),
+            -len(item["matched_terms_in_content"]),
             -item["search_rank"],
             item["chunk"].document.title,
             item["chunk"].chunk_index,
-        ),
+        )
     )
 
-    evidence = []
+    retrieved_candidates = []
 
     for item in ranked[:max_results]:
 
         chunk = item["chunk"]
         document = chunk.document
 
-        evidence.append({
+        retrieved_candidates.append({
             "chunk_id": str(chunk.id),
             "document_id": str(document.id),
             "document_title": document.title,
@@ -369,32 +412,57 @@ def retrieve_evidence(ticket, max_results=5):
             "source_reference": document.source_reference,
             "chunk_index": chunk.chunk_index,
             "content": chunk.content,
+
             "matched_terms": sorted(
                 item["matched_terms"]
             ),
             "matched_phrases": sorted(
                 item["matched_phrases"]
             ),
+
+            "matched_terms_in_content": sorted(
+                item["matched_terms_in_content"]
+            ),
+            "matched_phrases_in_content": sorted(
+                item["matched_phrases_in_content"]
+            ),
+            "matched_terms_in_title": sorted(
+                item["matched_terms_in_title"]
+            ),
+            "matched_phrases_in_title": sorted(
+                item["matched_phrases_in_title"]
+            ),
+
             "match_score": item["match_score"],
             "search_rank": round(
                 item["search_rank"],
                 6,
             ),
+            "retrieval_relevance": item[
+                "retrieval_relevance"
+            ],
         })
+
+    evidence = [
+        candidate
+        for candidate in retrieved_candidates
+        if candidate["retrieval_relevance"]["level"]
+        in {"moderate", "strong"}
+    ]
 
     return {
         "search_terms": search_terms,
         "search_phrases": search_phrases,
         "evidence": evidence,
+        "retrieved_candidates": retrieved_candidates,
     }
 
-
-def investigate_ticket(ticket, max_results=5):
+def investigate_ticket(ticket, max_results=5, receptionist_findings=None):
     """
     Performs deterministic, knowledge-based investigation.
 
-    Retrieval provides supporting documentation. It does not
-    independently establish a root cause or recommend a fix.
+    Retrieval relevance is assessed separately from technical
+    evidence and root-cause verification.
     """
 
     retrieval = retrieve_evidence(
@@ -403,24 +471,52 @@ def investigate_ticket(ticket, max_results=5):
     )
 
     evidence = retrieval["evidence"]
+    candidates = retrieval["retrieved_candidates"]
 
     if evidence:
 
         investigation_status = "evidence_found"
 
         summary = (
-            f"Retrieved {len(evidence)} relevant "
-            "technical documentation sections."
+            f"Retrieved {len(evidence)} documentation "
+            "sections with sufficient content-level relevance."
         )
 
     else:
 
         investigation_status = "no_relevant_evidence"
 
-        summary = (
-            "No sufficiently relevant technical "
-            "documentation was retrieved."
-        )
+        if candidates:
+            summary = (
+                f"Retrieved {len(candidates)} candidate "
+                "documentation sections, but none met the "
+                "minimum content-relevance threshold."
+            )
+        else:
+            summary = (
+                "No technical documentation candidates "
+                "were retrieved."
+            )
+
+    if evidence:
+        unresolved_questions = []
+
+    elif candidates:
+        unresolved_questions = [
+            (
+                "The retrieved documentation did not contain "
+                "sufficient matching technical details."
+            ),
+            (
+                "Additional documentation describing the "
+                "reported behaviour is needed."
+            ),
+        ]
+
+    else:
+        unresolved_questions = [
+            "Additional technical documentation is needed."
+        ]
 
     return {
         "investigation_status": investigation_status,
@@ -430,6 +526,8 @@ def investigate_ticket(ticket, max_results=5):
         "summary": summary,
 
         "documented_evidence": evidence,
+
+        "retrieved_candidates": candidates,
 
         "root_cause": {
             "status": "not_established",
@@ -443,23 +541,18 @@ def investigate_ticket(ticket, max_results=5):
 
         "recommended_workaround": None,
 
-        "unresolved_questions": (
-            [
-                "Additional technical documentation is needed."
-            ]
-            if not evidence
-            else []
-        ),
+        "unresolved_questions": unresolved_questions,
 
         "retrieval_metadata": {
-            "method": "postgres_full_text_search",
+            "method": "postgres_full_text_search_batched",
             "search_terms": retrieval["search_terms"],
             "search_phrases": retrieval["search_phrases"],
             "evidence_count": len(evidence),
+            "candidate_count": len(candidates),
         },
 
         "investigator": {
             "name": "deterministic_debugger",
-            "version": "1.1.0",
+            "version": "1.2.0",
         },
     }

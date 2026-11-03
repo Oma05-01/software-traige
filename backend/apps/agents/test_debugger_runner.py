@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
@@ -18,7 +18,7 @@ from .debugger_runner import (
     run_debugger,
 )
 
-
+@override_settings(DEBUGGER_MODE="deterministic")
 class DebuggerRunnerTests(TestCase):
 
     def setUp(self):

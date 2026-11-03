@@ -1,6 +1,8 @@
 import logging
 from apps.reviews.services import create_review_request
 from django.db import transaction
+from django.conf import settings
+from apps.tickets.models import Ticket
 
 from apps.agents.implementations.support_rep import (
     draft_support_response,
@@ -29,17 +31,36 @@ class SupportRepNotReady(Exception):
     """Raised when the Support Rep's prerequisites are not satisfied."""
 
 
+def get_support_rep_drafter():
+    """Select the configured Support Rep implementation."""
+
+    mode = settings.SUPPORT_REP_MODE
+
+    if mode == "deterministic":
+        return draft_support_response
+
+    if mode == "llm":
+        from apps.agents.implementations.support_rep_llm import (
+            draft_support_response_llm,
+        )
+
+        return draft_support_response_llm
+
+    raise ValueError(
+        f"Unsupported SUPPORT_REP_MODE: {mode}"
+    )
+
 def build_support_rep_input(
     ticket,
     receptionist_findings,
-    debugger_findings,
+    debugger_findings=None,
+    product_manager_findings=None,
 ):
     """
-    Build a privacy-conscious snapshot of the information
-    the Support Rep needs.
+    Build a privacy-conscious Support Rep input snapshot.
 
-    Reporter email and other unnecessary personal information
-    are deliberately excluded.
+    The investigation context depends on ticket category.
+    Reporter email is deliberately excluded.
     """
 
     return {
@@ -53,8 +74,8 @@ def build_support_rep_input(
         "actual_behavior": ticket.actual_behavior,
         "receptionist_findings": receptionist_findings,
         "debugger_findings": debugger_findings,
+        "product_manager_findings": product_manager_findings,
     }
-
 
 def get_receptionist_output(workflow):
     """Retrieve the latest successful Receptionist result."""
@@ -104,6 +125,55 @@ def get_debugger_output(workflow):
 
     return execution.output_payload
 
+def get_product_manager_output(workflow):
+    """Retrieve the latest successful Product Manager result."""
+
+    execution = AgentExecution.objects.filter(
+        workflow_run=workflow,
+        agent_type=AgentExecution.AgentType.PRODUCT_MANAGER,
+        status=AgentExecution.Status.SUCCEEDED,
+    ).order_by("-attempt", "-created_at").first()
+
+    if execution is None:
+        raise SupportRepNotReady(
+            "A successful Product Manager execution is required."
+        )
+
+    if not isinstance(execution.output_payload, dict):
+        raise SupportRepNotReady(
+            "Product Manager output is missing or invalid."
+        )
+
+    return execution.output_payload
+
+def get_support_context(workflow):
+    """
+    Retrieve the investigation context appropriate for the ticket.
+
+    Bug reports use Debugger findings.
+    Feature requests use Product Manager findings.
+    """
+
+    category = workflow.ticket.category
+
+    if category == Ticket.Category.BUG:
+        return {
+            "debugger_findings": get_debugger_output(workflow),
+            "product_manager_findings": None,
+        }
+
+    if category == Ticket.Category.FEATURE:
+        return {
+            "debugger_findings": None,
+            "product_manager_findings": get_product_manager_output(
+                workflow
+            ),
+        }
+
+    raise SupportRepNotReady(
+        f"Support Rep cannot process category: {category}"
+    )
+
 
 def get_or_create_support_rep_execution(workflow):
     """
@@ -114,7 +184,7 @@ def get_or_create_support_rep_execution(workflow):
     """
 
     receptionist_output = get_receptionist_output(workflow)
-    debugger_output = get_debugger_output(workflow)
+    support_context = get_support_context(workflow)
 
     existing_success = AgentExecution.objects.filter(
         workflow_run=workflow,
@@ -142,10 +212,10 @@ def get_or_create_support_rep_execution(workflow):
 
         return active_execution
 
-    input_payload = build_support_rep_input(
+    input_payload=build_support_rep_input(
         workflow.ticket,
         receptionist_output,
-        debugger_output,
+        **support_context,
     )
 
     try:
@@ -307,12 +377,12 @@ def run_support_rep(workflow_id, celery_task_id=None):
             return execution
 
         receptionist_output = get_receptionist_output(workflow)
-        debugger_output = get_debugger_output(workflow)
+        support_context = get_support_context(workflow)
 
         result = draft_support_response(
             workflow.ticket,
             receptionist_output,
-            debugger_output,
+            **support_context,
         )
 
         completed_execution = persist_support_response(

@@ -140,11 +140,130 @@ def _build_evidence_references(debugger_findings):
 
     return references
 
+def _draft_feature_support_response(
+    ticket,
+    receptionist_findings,
+    product_manager_findings,
+):
+    """Prepare a deterministic acknowledgement for a feature request."""
+
+    title = _clean_text(
+        getattr(ticket, "title", "")
+    ) or "your feature request"
+
+    reporter_name = _clean_text(
+        getattr(ticket, "reporter_name", "")
+    )
+
+    requested_capability = _clean_text(
+        product_manager_findings.get("requested_capability", "")
+    ) or title
+
+    greeting = (
+        f"Hello {reporter_name},"
+        if reporter_name
+        else "Hello,"
+    )
+
+    lines = [
+        greeting,
+        "",
+        "Thank you for sharing your feature suggestion.",
+        "",
+        f"We understand that you are requesting {requested_capability}",
+        "",
+        "Our team has prepared an initial product assessment of "
+        "your suggestion. This assessment will be reviewed internally. "
+        "No implementation or delivery decision has been made.",
+        "",
+        "Thank you for taking the time to share your feedback.",
+        "",
+        "Regards,",
+        "Support Team",
+    ]
+
+    category = receptionist_findings.get("category")
+    priority = receptionist_findings.get("priority")
+
+    assessment_summary = {
+        "problem_statement": product_manager_findings.get(
+            "problem_statement"
+        ),
+        "requested_capability": requested_capability,
+        "user_value": product_manager_findings.get("user_value"),
+        "proposed_scope": product_manager_findings.get("proposed_scope"),
+        "acceptance_criteria": product_manager_findings.get(
+            "acceptance_criteria", []
+        ),
+        "considerations": product_manager_findings.get(
+            "considerations", []
+        ),
+        "open_questions": product_manager_findings.get(
+            "open_questions", []
+        ),
+        "assessment_confidence": product_manager_findings.get(
+            "assessment_confidence"
+        ),
+    }
+
+    internal_review_notes = [
+        {
+            "type": "classification",
+            "category": category,
+            "priority": priority,
+            "instruction": (
+                "Review the initial classification and priority."
+            ),
+        },
+        {
+            "type": "product_assessment",
+            "instruction": (
+                "Review the Product Manager assessment. "
+                "It is a recommendation, not an approval "
+                "or implementation commitment."
+            ),
+            "assessment_confidence": assessment_summary[
+                "assessment_confidence"
+            ],
+            "open_question_count": len(
+                assessment_summary["open_questions"]
+            ),
+        },
+    ]
+
+    return {
+        "draft_status": "pending_human_review",
+
+        "subject": f"Update on your feature request: {title}",
+
+        "draft_response": "\n".join(lines),
+
+        "response_type": "feature_request_acknowledgement",
+
+        "follow_up_questions": [],
+
+        "evidence_references": [],
+
+        "product_assessment": assessment_summary,
+
+        "internal_review_notes": internal_review_notes,
+
+        "requires_human_review": True,
+
+        "external_send_authorized": False,
+
+        "responder": {
+            "name": "deterministic_support_rep",
+            "version": SUPPORT_REP_VERSION,
+        },
+    }
+
 
 def draft_support_response(
     ticket,
     receptionist_findings,
-    debugger_findings,
+    debugger_findings=None,
+    product_manager_findings=None,
 ):
     """
     Prepare a deterministic support response for human review.
@@ -160,6 +279,23 @@ def draft_support_response(
         "receptionist_findings",
         receptionist_findings,
     )
+
+    if product_manager_findings is not None:
+        _validate_findings(
+            "product_manager_findings",
+            product_manager_findings,
+        )
+
+        return _draft_feature_support_response(
+            ticket,
+            receptionist_findings,
+            product_manager_findings,
+        )
+
+    if debugger_findings is None:
+        raise ValueError(
+            "Debugger findings are required for bug reports."
+        )
 
     _validate_findings(
         "debugger_findings",

@@ -1,5 +1,5 @@
 import logging
-
+from django.conf import settings
 from django.db import transaction
 
 from apps.tickets.models import Ticket
@@ -28,6 +28,25 @@ from .implementations.receptionist import classify_ticket
 
 
 logger = logging.getLogger(__name__)
+
+def get_receptionist_classifier():
+    """Select the configured Receptionist implementation."""
+
+    mode = settings.RECEPTIONIST_MODE
+
+    if mode == "deterministic":
+        return classify_ticket
+
+    if mode == "llm":
+        from .implementations.receptionist_llm import (
+            classify_ticket_llm,
+        )
+
+        return classify_ticket_llm
+
+    raise ValueError(
+        f"Unsupported RECEPTIONIST_MODE: {mode}"
+    )
 
 
 def build_receptionist_input(ticket):
@@ -258,7 +277,9 @@ def run_receptionist(workflow_id, celery_task_id=None):
         return execution
 
     try:
-        result = classify_ticket(workflow.ticket)
+        classifier = get_receptionist_classifier()
+
+        result = classifier(workflow.ticket)
 
         return persist_receptionist_result(
             execution,

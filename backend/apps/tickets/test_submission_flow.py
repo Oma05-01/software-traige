@@ -10,6 +10,8 @@ from django.test import override_settings
 @override_settings(
     CELERY_TASK_ALWAYS_EAGER=True,
     CELERY_TASK_EAGER_PROPAGATES=True,
+    RECEPTIONIST_MODE="deterministic",
+    SUPPORT_REP_MODE="deterministic",
 )
 class TicketSubmissionWorkflowTests(APITestCase):
 
@@ -179,19 +181,54 @@ class TicketSubmissionWorkflowTests(APITestCase):
 
         workflow = WorkflowRun.objects.get(ticket=ticket)
 
-        self.assertEqual(
-            ticket.category,
-            Ticket.Category.FEATURE,
+        product_manager_execution = AgentExecution.objects.get(
+            workflow_run=workflow,
+            agent_type=AgentExecution.AgentType.PRODUCT_MANAGER,
+        )
+
+        support_rep_execution = AgentExecution.objects.get(
+            workflow_run=workflow,
+            agent_type=AgentExecution.AgentType.SUPPORT_REP,
         )
 
         self.assertEqual(
+        ticket.category,
+        Ticket.Category.FEATURE,
+        )
+
+        self.assertEqual(
+            product_manager_execution.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        self.assertEqual(
+            support_rep_execution.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        workflow.refresh_from_db()
+        ticket.refresh_from_db()
+
+        self.assertEqual(
             workflow.current_stage,
-            WorkflowRun.Stage.PRODUCT_MANAGER,
+            WorkflowRun.Stage.HUMAN_REVIEW,
         )
 
         self.assertEqual(
             workflow.status,
-            WorkflowRun.Status.RUNNING,
+            WorkflowRun.Status.AWAITING_REVIEW,
+        )
+
+        self.assertEqual(
+            ticket.status,
+            Ticket.Status.AWAITING_REVIEW,
+        )
+
+        self.assertTrue(
+            ReviewRequest.objects.filter(
+                workflow_run=workflow,
+                agent_execution=support_rep_execution,
+            ).exists()
         )
 
     def test_unclear_submission_enters_human_review(self):

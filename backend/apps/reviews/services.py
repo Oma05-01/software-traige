@@ -125,12 +125,7 @@ def update_review_proposal(
     reviewer,
     proposed_payload,
 ):
-    """
-    Allow staff to edit a proposal while it remains pending.
-
-    Editing an already approved or rejected request is prohibited.
-    A revised proposal must receive a new review cycle.
-    """
+    """Edit a pending proposal while preserving its previous version."""
 
     require_staff_reviewer(reviewer)
 
@@ -148,11 +143,15 @@ def update_review_proposal(
         proposed_payload,
     )
 
+    previous_payload = deepcopy(review_request.proposed_payload)
+
     review_request.proposed_payload = deepcopy(proposed_payload)
+    review_request.revision_number += 1
 
     review_request.save(
         update_fields=[
             "proposed_payload",
+            "revision_number",
             "updated_at",
         ],
     )
@@ -164,8 +163,9 @@ def update_review_proposal(
         payload={
             "review_request_id": str(review_request.id),
             "reviewer_id": str(reviewer.pk),
-            "action_type": review_request.action_type,
-            "changed_fields": sorted(proposed_payload.keys()),
+            "revision_number": review_request.revision_number,
+            "previous_proposed_payload": previous_payload,
+            "proposed_payload": deepcopy(proposed_payload),
         },
     )
 
@@ -270,3 +270,144 @@ def reject_review_request(
     )
 
     return review_request
+
+@transaction.atomic
+def request_review_changes(
+    review_request_id,
+    reviewer,
+    decision_note,
+):
+    """
+    Return a pending proposal for revision.
+
+    This is not the same as rejecting the proposed action.
+    """
+
+    require_staff_reviewer(reviewer)
+
+    if not isinstance(decision_note, str) or not decision_note.strip():
+        raise InvalidReviewAction(
+            "A decision note is required when requesting changes."
+        )
+
+    review_request = ReviewRequest.objects.select_for_update().get(
+        pk=review_request_id,
+    )
+
+    if review_request.status != ReviewRequest.Status.PENDING:
+        raise InvalidReviewAction(
+            "Only pending review requests can have changes requested."
+        )
+
+    review_request.status = ReviewRequest.Status.CHANGES_REQUESTED
+    review_request.reviewed_by = reviewer
+    review_request.reviewed_at = timezone.now()
+    review_request.decision_note = decision_note.strip()
+
+    review_request.save(
+        update_fields=[
+            "status",
+            "reviewed_by",
+            "reviewed_at",
+            "decision_note",
+            "updated_at",
+        ],
+    )
+
+    record_workflow_event(
+        review_request.workflow_run_id,
+        event_type="review.changes_requested",
+        source=WorkflowEvent.Source.HUMAN,
+        payload={
+            "review_request_id": str(review_request.id),
+            "reviewer_id": str(reviewer.pk),
+            "action_type": review_request.action_type,
+            "decision_note": review_request.decision_note,
+            "revision_number": review_request.revision_number,
+        },
+    )
+
+    return review_request
+
+@transaction.atomic
+def revise_review_request(
+    review_request_id,
+    reviewer,
+    proposed_payload,
+):
+    """
+    Submit a revised proposal after a reviewer requests changes.
+
+    The previous proposal and decision are preserved in the workflow
+    event history. The review request returns to pending status.
+    """
+
+    require_staff_reviewer(reviewer)
+
+    review_request = ReviewRequest.objects.select_for_update().get(
+        pk=review_request_id,
+    )
+
+    if review_request.status != ReviewRequest.Status.CHANGES_REQUESTED:
+        raise InvalidReviewAction(
+            "Only review requests with changes requested can be revised."
+        )
+
+    validate_proposal(
+        review_request.action_type,
+        proposed_payload,
+    )
+
+    previous_payload = deepcopy(review_request.proposed_payload)
+
+    previous_decision = {
+        "reviewer_id": (
+            str(review_request.reviewed_by_id)
+            if review_request.reviewed_by_id
+            else None
+        ),
+        "reviewed_at": (
+            review_request.reviewed_at.isoformat()
+            if review_request.reviewed_at
+            else None
+        ),
+        "decision_note": review_request.decision_note,
+    }
+
+    review_request.proposed_payload = deepcopy(proposed_payload)
+    review_request.revision_number += 1
+
+    # Start a fresh review decision cycle.
+    review_request.status = ReviewRequest.Status.PENDING
+    review_request.reviewed_by = None
+    review_request.reviewed_at = None
+    review_request.decision_note = ""
+
+    review_request.save(
+        update_fields=[
+            "proposed_payload",
+            "revision_number",
+            "status",
+            "reviewed_by",
+            "reviewed_at",
+            "decision_note",
+            "updated_at",
+        ],
+    )
+
+    record_workflow_event(
+        review_request.workflow_run_id,
+        event_type="review.revision_submitted",
+        source=WorkflowEvent.Source.HUMAN,
+        payload={
+            "review_request_id": str(review_request.id),
+            "reviewer_id": str(reviewer.pk),
+            "revision_number": review_request.revision_number,
+            "previous_decision": previous_decision,
+            "previous_proposed_payload": previous_payload,
+            "proposed_payload": deepcopy(proposed_payload),
+        },
+    )
+
+    return review_request
+

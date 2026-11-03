@@ -11,13 +11,14 @@ from apps.events.models import WorkflowEvent
 from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
 from apps.workflow.services import transition_workflow
+from apps.agents.product_manager_runner import run_product_manager
 
 
 logger = logging.getLogger(__name__)
 
 
 def record_dispatch_failure(workflow_id, agent_type, exc):
-    """Record a failure to enqueue an agent task."""
+    """Record a dispatch failure and fail the affected workflow."""
 
     logger.exception(
         "Could not dispatch %s task for workflow %s",
@@ -35,6 +36,14 @@ def record_dispatch_failure(workflow_id, agent_type, exc):
         },
     )
 
+    workflow = WorkflowRun.objects.get(pk=workflow_id)
+
+    if workflow.status == WorkflowRun.Status.RUNNING:
+        transition_workflow(
+            workflow_id,
+            WorkflowRun.Status.FAILED,
+            source=WorkflowEvent.Source.SYSTEM,
+        )
 
 def dispatch_debugger_workflow(workflow_id):
     """Queue the Debugger after successful Receptionist execution."""
@@ -54,6 +63,23 @@ def dispatch_debugger_workflow(workflow_id):
             exc,
         )
 
+def dispatch_product_manager_workflow(workflow_id):
+    """Queue the Product Manager after feature classification."""
+
+    try:
+        process_product_manager_workflow.delay(str(workflow_id))
+
+        logger.info(
+            "Dispatched Product Manager task for workflow %s",
+            workflow_id,
+        )
+
+    except Exception as exc:
+        record_dispatch_failure(
+            workflow_id,
+            "product_manager",
+            exc,
+        )
 
 def dispatch_support_rep_workflow(workflow_id):
     """Queue the Support Rep after successful Debugger execution."""
@@ -120,6 +146,16 @@ def process_ticket_workflow(self, workflow_id):
 
     if should_run_debugger:
         dispatch_debugger_workflow(workflow.id)
+
+    should_run_product_manager = (
+        execution.status == AgentExecution.Status.SUCCEEDED
+        and workflow.status == WorkflowRun.Status.RUNNING
+        and workflow.current_stage == WorkflowRun.Stage.PRODUCT_MANAGER
+        and ticket_category == Ticket.Category.FEATURE
+    )
+
+    if should_run_product_manager:
+        dispatch_product_manager_workflow(workflow.id)
 
     return str(execution.id)
 
@@ -196,5 +232,49 @@ def process_support_rep_workflow(self, workflow_id):
         workflow.id,
         celery_task_id=self.request.id,
     )
+
+    return str(execution.id)
+
+@shared_task(
+    bind=True,
+    name="apps.agents.process_product_manager_workflow",
+    ignore_result=True,
+)
+def process_product_manager_workflow(self, workflow_id):
+    """
+    Execute Product Manager and dispatch Support Rep
+    after a successful feature assessment.
+    """
+
+    workflow = WorkflowRun.objects.select_related("ticket").get(
+        pk=workflow_id,
+    )
+
+    if workflow.status != WorkflowRun.Status.RUNNING:
+        return None
+
+    if workflow.current_stage != WorkflowRun.Stage.PRODUCT_MANAGER:
+        return None
+
+    if workflow.ticket.category != Ticket.Category.FEATURE:
+        return None
+
+    execution = run_product_manager(
+        workflow.id,
+        celery_task_id=self.request.id,
+    )
+
+    workflow.refresh_from_db(
+        fields=["status", "current_stage"],
+    )
+
+    should_run_support_rep = (
+        execution.status == AgentExecution.Status.SUCCEEDED
+        and workflow.status == WorkflowRun.Status.RUNNING
+        and workflow.current_stage == WorkflowRun.Stage.SUPPORT_REP
+    )
+
+    if should_run_support_rep:
+        dispatch_support_rep_workflow(workflow.id)
 
     return str(execution.id)

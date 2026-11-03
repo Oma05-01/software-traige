@@ -1,7 +1,7 @@
 from unittest.mock import patch
 from apps.reviews.models import ReviewRequest
 from django.test import TestCase
-
+from django.test import override_settings
 from apps.agents.models import AgentExecution
 from apps.agents.services import (
     complete_agent_execution,
@@ -11,6 +11,8 @@ from apps.agents.services import (
 from apps.agents.support_rep_runner import (
     SupportRepNotReady,
     run_support_rep,
+    build_support_rep_input,
+    get_support_context,
 )
 from apps.events.models import WorkflowEvent
 from apps.tickets.models import Ticket
@@ -21,7 +23,7 @@ from apps.workflow.services import (
     transition_workflow,
 )
 
-
+@override_settings(SUPPORT_REP_MODE="deterministic")
 class SupportRepRunnerTests(TestCase):
 
     def setUp(self):
@@ -317,4 +319,141 @@ class SupportRepRunnerTests(TestCase):
         self.assertEqual(
             self.workflow.status,
             WorkflowRun.Status.FAILED,
+        )
+
+class FeatureSupportRepContextTests(TestCase):
+    def setUp(self):
+        self.ticket = Ticket.objects.create(
+            title="Add dark mode to the dashboard",
+            description=(
+                "Users should be able to switch between "
+                "light and dark themes."
+            ),
+            reporter_name="Feature Requester",
+            reporter_email="feature@example.com",
+            environment="Windows 11, Chrome",
+            category=Ticket.Category.FEATURE,
+            priority=Ticket.Priority.MEDIUM,
+        )
+
+        self.workflow = create_workflow_for_ticket(
+            self.ticket.id
+        )
+
+        transition_workflow(
+            self.workflow.id,
+            WorkflowRun.Status.RUNNING,
+        )
+
+        self.receptionist_output = {
+            "category": "feature",
+            "priority": "medium",
+            "issue_summary": self.ticket.title,
+            "needs_human_review": False,
+        }
+
+        receptionist_execution = create_agent_execution(
+            self.workflow.id,
+            "receptionist",
+            {"ticket_id": str(self.ticket.id)},
+        )
+
+        receptionist_execution, _ = start_agent_execution(
+            receptionist_execution.id,
+        )
+
+        complete_agent_execution(
+            receptionist_execution.id,
+            self.receptionist_output,
+        )
+
+        advance_workflow_stage(
+            self.workflow.id,
+            WorkflowRun.Stage.PRODUCT_MANAGER,
+        )
+
+        self.product_manager_output = {
+            "assessment_status": "pending_human_review",
+            "problem_statement": (
+                "The dashboard currently offers only a light theme."
+            ),
+            "requested_capability": (
+                "Allow users to switch between light and dark themes."
+            ),
+            "user_value": (
+                "Users can choose their preferred display theme."
+            ),
+            "proposed_scope": (
+                "Provide a dashboard-level theme preference."
+            ),
+            "acceptance_criteria": [
+                "Users can select a dark theme.",
+                "The selected theme is applied consistently.",
+            ],
+            "considerations": [
+                "Theme preference persistence needs consideration."
+            ],
+            "open_questions": [
+                "Should the preference persist across devices?"
+            ],
+            "assessment_confidence": "high",
+            "requires_human_review": True,
+            "approval_status": "not_approved",
+        }
+
+        product_manager_execution = create_agent_execution(
+            self.workflow.id,
+            "product_manager",
+            {"ticket_id": str(self.ticket.id)},
+        )
+
+        product_manager_execution, _ = start_agent_execution(
+            product_manager_execution.id,
+        )
+
+        complete_agent_execution(
+            product_manager_execution.id,
+            self.product_manager_output,
+        )
+
+        advance_workflow_stage(
+            self.workflow.id,
+            WorkflowRun.Stage.SUPPORT_REP,
+        )
+
+    def test_feature_ticket_uses_product_manager_findings(self):
+        support_context = get_support_context(self.workflow)
+
+        self.assertIsNone(
+            support_context["debugger_findings"]
+        )
+
+        self.assertEqual(
+            support_context["product_manager_findings"],
+            self.product_manager_output,
+        )
+
+    def test_feature_support_input_contains_product_assessment(self):
+        support_context = get_support_context(self.workflow)
+
+        input_payload = build_support_rep_input(
+            self.ticket,
+            self.receptionist_output,
+            **support_context,
+        )
+
+        self.assertIsInstance(input_payload, dict)
+
+        self.assertIsNone(
+            input_payload["debugger_findings"]
+        )
+
+        self.assertEqual(
+            input_payload["product_manager_findings"],
+            self.product_manager_output,
+        )
+
+        self.assertNotIn(
+            "reporter_email",
+            input_payload,
         )

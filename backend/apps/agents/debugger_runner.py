@@ -1,7 +1,7 @@
 import logging
-
+from django.conf import settings
 from django.db import transaction
-
+from .implementations.debugger import investigate_ticket
 from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
 from apps.workflow.services import (
@@ -30,6 +30,33 @@ logger = logging.getLogger(__name__)
 class DebuggerNotReady(Exception):
     """Raised when the Debugger cannot execute its assigned task."""
 
+
+def get_debugger_investigator():
+    """
+    Select the Debugger implementation from project settings.
+
+    Deterministic mode remains the default.
+    """
+
+    mode = getattr(
+        settings,
+        "DEBUGGER_MODE",
+        "deterministic",
+    ).lower()
+
+    if mode == "deterministic":
+        return investigate_ticket
+
+    if mode == "llm":
+        from .implementations.debugger_llm import (
+            investigate_ticket_llm,
+        )
+
+        return investigate_ticket_llm
+
+    raise DebuggerNotReady(
+        f"Unsupported DEBUGGER_MODE: {mode}"
+    )
 
 def build_debugger_input(ticket, receptionist_output):
     """
@@ -248,7 +275,14 @@ def run_debugger(workflow_id, celery_task_id=None):
         return execution
 
     try:
-        result = investigate_ticket(workflow.ticket)
+        receptionist_findings = get_receptionist_output(workflow)
+
+        investigator = get_debugger_investigator()
+
+        result = investigator(
+            workflow.ticket,
+            receptionist_findings=receptionist_findings,
+        )
 
         return persist_debugger_result(
             execution,

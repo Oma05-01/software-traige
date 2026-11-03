@@ -178,5 +178,164 @@ class DebuggerInvestigationTests(TestCase):
 
         self.assertEqual(
             result["investigator"]["version"],
-            "1.1.0",
+            "1.2.0",
         )
+
+
+    def test_title_only_match_is_retrieved_but_not_promoted(self):
+        title_only_document = ingest_document(
+            title="PostgreSQL Connection Pooling Troubleshooting",
+            content=(
+                "This reference discusses resource allocation "
+                "and lifecycle management."
+            ),
+        )
+
+        ticket = Ticket.objects.create(
+            title="PostgreSQL connection pool failure",
+            description=(
+                "The application cannot establish "
+                "a reusable database session."
+            ),
+            reporter_email="another@example.com",
+        )
+
+        result = investigate_ticket(ticket)
+
+        candidate = next(
+            (
+                item
+                for item in result["retrieved_candidates"]
+                if item["document_id"] == str(title_only_document.id)
+            ),
+            None,
+        )
+
+        self.assertIsNotNone(candidate)
+
+        self.assertEqual(
+            candidate["retrieval_relevance"]["level"],
+            "weak",
+        )
+
+        evidence_document_ids = {
+            item["document_id"]
+            for item in result["documented_evidence"]
+        }
+
+        self.assertNotIn(
+            str(title_only_document.id),
+            evidence_document_ids,
+        )
+    
+    def test_retrieval_uses_one_database_query(self):
+
+        with self.assertNumQueries(1):
+            result = retrieve_evidence(self.ticket)
+
+        self.assertGreater(
+            len(result["evidence"]),
+            0,
+        )
+
+    def test_batched_retrieval_preserves_matched_terms(self):
+
+        result = retrieve_evidence(self.ticket)
+
+        matched_terms = {
+            term
+            for item in result["evidence"]
+            for term in item["matched_terms"]
+        }
+
+        self.assertIn("pdf", matched_terms)
+        self.assertIn("upload", matched_terms)
+
+    def test_zero_search_term_limit_returns_empty_list(self):
+
+        self.assertEqual(
+            extract_search_terms(
+                self.ticket,
+                max_terms=0,
+            ),
+            [],
+        )
+
+    def test_zero_search_phrase_limit_returns_empty_list(self):
+
+        from apps.agents.implementations.debugger import (
+            extract_search_phrases,
+        )
+
+        self.assertEqual(
+            extract_search_phrases(
+                self.ticket,
+                max_phrases=0,
+            ),
+            [],
+        )
+
+    def test_title_only_match_is_not_promoted_to_evidence(self):
+
+        title_only_document = ingest_document(
+            title="PostgreSQL Connection Pooling Troubleshooting",
+            content=(
+                "This reference discusses resource allocation "
+                "and lifecycle management."
+            ),
+        )
+
+        ticket = Ticket.objects.create(
+            title="PostgreSQL connection pool failure",
+            description=(
+                "The application cannot establish "
+                "a reusable database session."
+            ),
+            reporter_email="another@example.com",
+        )
+
+        result = investigate_ticket(ticket)
+
+        candidate = next(
+            (
+                item
+                for item in result["retrieved_candidates"]
+                if item["document_id"] == str(title_only_document.id)
+            ),
+            None,
+        )
+
+        self.assertIsNotNone(candidate)
+
+        self.assertEqual(
+            candidate["retrieval_relevance"]["level"],
+            "weak",
+        )
+
+        self.assertNotIn(
+            str(title_only_document.id),
+            {
+                item["document_id"]
+                for item in result["documented_evidence"]
+            },
+        )
+
+        self.assertEqual(
+            result["investigation_status"],
+            "no_relevant_evidence",
+        )
+
+    def test_relevant_documentation_is_promoted_to_evidence(self):
+
+        result = investigate_ticket(self.ticket)
+
+        self.assertGreater(
+            len(result["documented_evidence"]),
+            0,
+        )
+
+        for item in result["documented_evidence"]:
+            self.assertIn(
+                item["retrieval_relevance"]["level"],
+                {"moderate", "strong"},
+            )
