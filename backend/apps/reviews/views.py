@@ -1,5 +1,5 @@
 from django.shortcuts import get_object_or_404
-
+import uuid
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.generics import ListAPIView, RetrieveAPIView
@@ -7,12 +7,14 @@ from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.reviews.models import ReviewRequest
+from apps.reviews.models import ReviewRequest, ClassificationReview
 from apps.reviews.serializers import (
     ReviewChangesRequestSerializer,
     ReviewDecisionSerializer,
     ReviewProposalUpdateSerializer,
     ReviewRequestSerializer,
+    ClassificationReviewSerializer,
+    ClassificationReviewResolutionSerializer,
 )
 
 from apps.reviews.services import (
@@ -22,6 +24,8 @@ from apps.reviews.services import (
     request_review_changes,
     revise_review_request,
     update_review_proposal,
+    InvalidReviewAction,
+    resolve_classification_review,
 )
 
 
@@ -263,3 +267,107 @@ class ReviseReviewRequestView(APIView):
             status=status.HTTP_200_OK,
         )
 
+class ClassificationReviewListView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        queryset = ClassificationReview.objects.select_related(
+            "workflow_run__ticket",
+            "agent_execution",
+            "reviewed_by",
+        ).all()
+
+        requested_status = request.query_params.get(
+            "status",
+            ClassificationReview.Status.PENDING,
+        )
+
+        workflow_run_id = request.query_params.get(
+            "workflow_run_id"
+        )
+
+        if workflow_run_id:
+            try:
+                uuid.UUID(workflow_run_id)
+            except (ValueError, TypeError, AttributeError):
+                return Response(
+                    {"detail": "Invalid workflow_run_id."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            queryset = queryset.filter(
+                workflow_run_id=workflow_run_id
+            )
+
+        if requested_status != "all":
+            if requested_status not in ClassificationReview.Status.values:
+                return Response(
+                    {"detail": "Invalid classification review status."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            queryset = queryset.filter(status=requested_status)
+
+        serializer = ClassificationReviewSerializer(
+            queryset,
+            many=True,
+        )
+
+        return Response(serializer.data)
+
+
+class ClassificationReviewDetailView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, pk):
+        review = get_object_or_404(
+            ClassificationReview.objects.select_related(
+                "workflow_run__ticket",
+                "agent_execution",
+                "reviewed_by",
+            ),
+            pk=pk,
+        )
+
+        serializer = ClassificationReviewSerializer(review)
+
+        return Response(serializer.data)
+
+
+class ClassificationReviewResolveView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, pk):
+        input_serializer = ClassificationReviewResolutionSerializer(
+            data=request.data,
+        )
+        input_serializer.is_valid(raise_exception=True)
+
+        try:
+            review = resolve_classification_review(
+                classification_review_id=pk,
+                reviewer=request.user,
+                **input_serializer.validated_data,
+            )
+        except InvalidReviewAction as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        review = (
+            ClassificationReview.objects
+            .select_related(
+                "workflow_run__ticket",
+                "agent_execution",
+                "reviewed_by",
+            )
+            .get(pk=review.pk)
+        )
+
+        output_serializer = ClassificationReviewSerializer(review)
+
+        return Response(
+            output_serializer.data,
+            status=status.HTTP_200_OK,
+        )

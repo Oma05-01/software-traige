@@ -72,11 +72,32 @@ def get_receptionist_output(workflow):
 
     return execution.output_payload
 
+def get_effective_receptionist_output(workflow):
+    """
+    Combine the original Receptionist findings with the
+    ticket's authoritative, staff-confirmed classification.
+
+    The original AgentExecution payload remains unchanged.
+    """
+
+    receptionist_output = get_receptionist_output(workflow)
+
+    # Read the authoritative classification directly from the DB.
+    ticket = Ticket.objects.only(
+        "category",
+        "priority",
+    ).get(pk=workflow.ticket_id)
+
+    return {
+        **receptionist_output,
+        "category": ticket.category,
+        "priority": ticket.priority,
+    }
 
 def get_or_create_product_manager_execution(workflow):
     """Retrieve or create a Product Manager execution."""
 
-    receptionist_output = get_receptionist_output(workflow)
+    receptionist_output = get_effective_receptionist_output(workflow)
 
     latest = AgentExecution.objects.filter(
         workflow_run=workflow,
@@ -262,7 +283,7 @@ def run_product_manager(workflow_id, celery_task_id=None):
         return execution
 
     try:
-        receptionist_output = get_receptionist_output(workflow)
+        receptionist_output = get_effective_receptionist_output(workflow)
 
         result = assess_feature_request(
             workflow.ticket,

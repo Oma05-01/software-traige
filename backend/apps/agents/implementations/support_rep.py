@@ -1,7 +1,7 @@
 import re
 
 
-SUPPORT_REP_VERSION = "1.0.0"
+SUPPORT_REP_VERSION = "1.1.0"
 
 
 def _clean_text(value):
@@ -351,7 +351,10 @@ def draft_support_response(
         "",
         "Thank you for reporting this issue.",
         "",
-        f"We understand that {reported_behavior}",
+        "Based on your report, the following behaviour "
+        "needs further investigation:",
+        "",
+        f"“{reported_behavior}”",
     ]
 
     if expected_behavior:

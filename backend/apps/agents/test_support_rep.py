@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from django.test import SimpleTestCase
 
 from apps.agents.implementations.support_rep import (
+    SUPPORT_REP_VERSION,
     draft_support_response,
 )
 
@@ -211,5 +212,5 @@ class SupportRepTests(SimpleTestCase):
 
         self.assertEqual(
             result["responder"]["version"],
-            "1.0.0",
+            SUPPORT_REP_VERSION,
         )

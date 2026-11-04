@@ -14,7 +14,7 @@ from apps.agents.llm.factory import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_REP_LLM_VERSION = "1.0.0"
+SUPPORT_REP_LLM_VERSION = "1.1.0"
 
 
 SUPPORT_RESPONSE_SCHEMA = {
@@ -64,6 +64,22 @@ IMPORTANT RULES:
   the investigation.
 - Ask no more than three follow-up questions.
 - Use clear, professional and approachable language.
+- Write from the Support Team's perspective, addressing the
+  reporter naturally as "you" and "your" where appropriate.
+- Remember that ticket descriptions are written from the
+  reporter's perspective, not the Support Team's perspective.
+- When paraphrasing a first-person report, convert the
+  perspective naturally. For example, "I am having trouble
+  with the application" should become "You're experiencing
+  difficulties with the application."
+- Never mechanically insert the reporter's original wording
+  after phrases such as "We understand that".
+- Do not copy first-person statements in a way that makes
+  the Support Team appear to be experiencing the problem.
+- Acknowledge ambiguous reports without prematurely deciding
+  whether the issue is a bug or a feature request.
+- Keep the acknowledgement concise, self-contained and
+  grammatically complete.
 - Do not include a greeting, email subject or signature.
 - Do not include markdown headings or numbered lists in the
   acknowledgement field.
@@ -398,22 +414,30 @@ def draft_support_response_llm(
         else []
     )
 
-    # Assemble the final message locally.
+        # Assemble the final message locally.
+    is_feature_request = product_manager_findings is not None
+
     lines = [
         f"Hello {reporter_name}," if reporter_name else "Hello,",
         "",
-        "Thank you for reporting this issue.",
+        (
+            "Thank you for sharing your feature suggestion."
+            if is_feature_request
+            else "Thank you for reporting this issue."
+        ),
         "",
         acknowledgement,
     ]
 
-    if product_manager_findings is not None:
+    if is_feature_request:
         lines.extend([
             "",
-            "Our team has prepared an initial assessment of "
-            "your suggestion. This assessment is being reviewed "
-            "internally. No implementation or delivery decision "
-            "has been made.",
+            (
+                "Our team has prepared an initial assessment of "
+                "your suggestion. This assessment is being reviewed "
+                "internally. No implementation or delivery decision "
+                "has been made."
+            ),
         ])
 
     elif evidence_references:
@@ -437,8 +461,13 @@ def draft_support_response_llm(
     if follow_up_questions:
         lines.extend([
             "",
-            "To help us investigate further, could you "
-            "please clarify the following:",
+            (
+                "To help us assess your suggestion, could you "
+                "please clarify the following:"
+                if is_feature_request
+                else "To help us investigate further, could you "
+                     "please clarify the following:"
+            ),
             "",
         ])
 
@@ -448,11 +477,29 @@ def draft_support_response_llm(
         ):
             lines.append(f"{index}. {question}")
 
+    # Use a closing appropriate to the request type.
+    if is_feature_request:
+        lines.extend([
+            "",
+            (
+                "Thank you for taking the time to share "
+                "your feedback. Your clarification will help "
+                "us understand the capability you're requesting."
+                if follow_up_questions
+                else "Thank you for taking the time to share "
+                     "your feedback."
+            ),
+        ])
+
+    else:
+        lines.extend([
+            "",
+            "Thank you for helping us investigate this issue. "
+            "We will review the additional information before "
+            "recommending a solution.",
+        ])
+
     lines.extend([
-        "",
-        "Thank you for helping us investigate this issue. "
-        "We will review the additional information before "
-        "recommending a solution.",
         "",
         "Regards,",
         "Support Team",

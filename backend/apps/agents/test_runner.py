@@ -13,6 +13,7 @@ from apps.events.models import WorkflowEvent
 
 from .models import AgentExecution
 from .runner import run_receptionist
+from apps.reviews.models import ClassificationReview
 
 @override_settings(RECEPTIONIST_MODE="deterministic")
 class ReceptionistRunnerTests(TestCase):
@@ -137,6 +138,42 @@ class ReceptionistRunnerTests(TestCase):
         self.assertEqual(
             self.ticket.status,
             Ticket.Status.AWAITING_REVIEW,
+        )
+
+        review = ClassificationReview.objects.get(
+            workflow_run=self.workflow,
+        )
+
+        self.assertEqual(
+            review.agent_execution,
+            execution,
+        )
+
+        self.assertEqual(
+            review.proposed_category,
+            execution.output_payload["category"],
+        )
+
+        self.assertEqual(
+            review.proposed_priority,
+            execution.output_payload["priority"],
+        )
+
+        self.assertEqual(
+            review.status,
+            ClassificationReview.Status.PENDING,
+        )
+
+        # The agent's uncertain suggestion must not become
+        # the ticket's confirmed classification.
+        self.assertEqual(
+            self.ticket.category,
+            Ticket.Category.UNCLASSIFIED,
+        )
+
+        self.assertEqual(
+            self.ticket.priority,
+            Ticket.Priority.UNASSESSED,
         )
 
     def test_repeated_invocation_does_not_duplicate_execution(self):

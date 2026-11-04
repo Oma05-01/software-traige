@@ -8,6 +8,9 @@ from apps.reviews.views import (
     ReviewRequestListView,
     RequestReviewChangesView,
     ReviseReviewRequestView,
+    ClassificationReviewListView,
+    ClassificationReviewDetailView,
+    ClassificationReviewResolveView,
 )
 
 
@@ -48,5 +51,20 @@ urlpatterns = [
         "<uuid:pk>/revise/",
         ReviseReviewRequestView.as_view(),
         name="review-revise",
+    ),
+    path(
+        "classifications/",
+        ClassificationReviewListView.as_view(),
+        name="classification-list",
+    ),
+    path(
+        "classifications/<uuid:pk>/",
+        ClassificationReviewDetailView.as_view(),
+        name="classification-detail",
+    ),
+    path(
+        "classifications/<uuid:pk>/resolve/",
+        ClassificationReviewResolveView.as_view(),
+        name="classification-resolve",
     ),
 ]

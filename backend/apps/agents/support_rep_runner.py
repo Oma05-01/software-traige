@@ -379,7 +379,9 @@ def run_support_rep(workflow_id, celery_task_id=None):
         receptionist_output = get_receptionist_output(workflow)
         support_context = get_support_context(workflow)
 
-        result = draft_support_response(
+        drafter = get_support_rep_drafter()
+
+        result = drafter(
             workflow.ticket,
             receptionist_output,
             **support_context,

@@ -12,11 +12,13 @@ import type {
   WorkflowRun,
 } from "@/lib/types/workflow";
 
+import type { ClassificationReview } from "@/lib/types/review";
 import type { TicketCategory } from "@/lib/types/ticket";
 
 interface WorkflowTimelineProps {
   workflow: WorkflowRun | null;
   category: TicketCategory;
+  classificationReview?: ClassificationReview | null;
   error?: string | null;
 }
 
@@ -273,6 +275,7 @@ function ExecutionFindings({
 export function WorkflowTimeline({
   workflow,
   category,
+  classificationReview,
   error,
 }: WorkflowTimelineProps) {
   if (!workflow) {
@@ -292,7 +295,13 @@ export function WorkflowTimeline({
   }
 
   const sequence = getAgentSequence(category);
+const isTerminal =
+  workflow.status === "completed" ||
+  workflow.status === "failed";
 
+const isAwaitingHumanReview =
+  workflow.status === "awaiting_review" &&
+  workflow.current_stage === "human_review";
   return (
     <section className="rounded-2xl border border-[#e9edf3] bg-white p-5 shadow-[0_2px_8px_rgba(30,50,80,0.025)] sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -316,10 +325,12 @@ export function WorkflowTimeline({
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="rounded-xl bg-[#f8f9fb] p-3">
           <p className="text-[10px] font-medium uppercase text-slate-400">
-            Current stage
+            {isTerminal ? "Last stage" : "Current stage"}
           </p>
-          <p className="mt-1 text-sm font-semibold text-[#34465f]">
-            {formatLabel(workflow.current_stage)}
+          <p className="text-[10px] font-medium uppercase text-slate-400">
+            {workflow.status === "completed" || workflow.status === "failed"
+              ? "Last stage"
+              : "Current stage"}
           </p>
         </div>
 
@@ -419,13 +430,22 @@ export function WorkflowTimeline({
         })}
       </div>
 
-      {workflow.current_stage === "human_review" && (
+      {isAwaitingHumanReview && (
         <div className="mt-5 rounded-xl border border-violet-100 bg-violet-50 p-4">
           <p className="text-sm font-semibold text-violet-800">
-            Awaiting human review
+            {classificationReview?.status === "pending"
+              ? "Awaiting classification decision"
+              : "Awaiting human review"}
           </p>
+
           <p className="mt-1 text-xs leading-5 text-violet-700">
-            The automated agents have handed their proposal to the review process.
+            {classificationReview?.status === "pending"
+              ? `The Receptionist suggested ${formatLabel(
+                  classificationReview.proposed_category
+                )} with ${formatLabel(
+                  classificationReview.proposed_priority
+                )} priority. Specialist routing will resume after staff confirms or corrects this classification.`
+              : "The automated agents have handed their proposed action to the human review process."}
           </p>
         </div>
       )}

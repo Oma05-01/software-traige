@@ -6,7 +6,7 @@ from apps.agents.models import AgentExecution
 from apps.events.models import WorkflowEvent
 from apps.reviews.models import ReviewRequest
 from django.test import override_settings
-
+from apps.reviews.models import ClassificationReview
 @override_settings(
     CELERY_TASK_ALWAYS_EAGER=True,
     CELERY_TASK_EAGER_PROPAGATES=True,
@@ -252,9 +252,40 @@ class TicketSubmissionWorkflowTests(APITestCase):
             workflow_run=workflow,
         )
 
+        # The ticket must not adopt an uncertain agent suggestion.
         self.assertEqual(
             ticket.category,
+            Ticket.Category.UNCLASSIFIED,
+        )
+
+        self.assertEqual(
+            ticket.priority,
+            Ticket.Priority.UNASSESSED,
+        )
+
+        # The suggested classification must be preserved for staff.
+        classification_review = ClassificationReview.objects.get(
+            workflow_run=workflow,
+        )
+
+        self.assertEqual(
+            classification_review.agent_execution,
+            execution,
+        )
+
+        self.assertEqual(
+            classification_review.proposed_category,
             Ticket.Category.OTHER,
+        )
+
+        self.assertEqual(
+            classification_review.proposed_priority,
+            Ticket.Priority.UNASSESSED,
+        )
+
+        self.assertEqual(
+            classification_review.status,
+            ClassificationReview.Status.PENDING,
         )
 
         self.assertEqual(
@@ -283,3 +314,10 @@ class TicketSubmissionWorkflowTests(APITestCase):
                 event_type="agent.classification_completed",
             ).exists()
         )
+
+        self.assertTrue(
+            WorkflowEvent.objects.filter(
+                workflow_run=workflow,
+                event_type="classification.review_requested",
+            ).exists()
+        )        

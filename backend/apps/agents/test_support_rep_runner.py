@@ -10,6 +10,7 @@ from apps.agents.services import (
 )
 from apps.agents.support_rep_runner import (
     SupportRepNotReady,
+    get_support_rep_drafter,
     run_support_rep,
     build_support_rep_input,
     get_support_context,
@@ -456,4 +457,16 @@ class FeatureSupportRepContextTests(TestCase):
         self.assertNotIn(
             "reporter_email",
             input_payload,
+        )
+
+
+    @override_settings(SUPPORT_REP_MODE="llm")
+    def test_selects_llm_support_rep_implementation(self):
+        from apps.agents.implementations.support_rep_llm import (
+            draft_support_response_llm,
+        )
+
+        self.assertIs(
+            get_support_rep_drafter(),
+            draft_support_response_llm,
         )

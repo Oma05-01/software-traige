@@ -8,7 +8,7 @@ from apps.agents.llm.factory import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
-PRODUCT_MANAGER_VERSION = "1.0.0"
+PRODUCT_MANAGER_VERSION = "1.1.0"
 
 FEATURE_ASSESSMENT_SCHEMA = {
     "type": "object",
@@ -108,6 +108,27 @@ IMPORTANT RULES:
 - Distinguish supplied facts from proposed interpretations.
 - When information is insufficient, lower confidence and
   provide useful open questions.
+
+INSUFFICIENT OR UNUSABLE REQUESTS:
+
+- If the submission is incoherent, nonsensical, or does not
+  identify a concrete requested capability, do not invent a
+  feature or manufacture acceptance criteria.
+- Set assessment_confidence to low.
+- Leave acceptance_criteria as an empty string.
+- Include at least one specific open question asking the
+  reporter to clarify the intended functionality.
+- Explain the uncertainty in the other assessment fields:
+  - problem_statement: explain that the submission does not
+    establish a specific user problem.
+  - requested_capability: explain that the requested
+    functionality is unclear.
+  - user_value: explain that potential user value cannot
+    yet be assessed.
+  - proposed_scope: explain that scope cannot be determined
+    until the request is clarified.
+- Do not interpret random or meaningless text as a feature.
+- Do not invent acceptance criteria just to fill the field.
 - Keep the assessment concise and actionable.
 
 OUTPUT FORMAT:
@@ -282,10 +303,10 @@ def _validate_assessment(result):
         )
     )
 
-    if not validated["acceptance_criteria"]:
-        raise ValueError(
-            "At least one acceptance criterion is required."
-        )
+    # Low-confidence assessments may legitimately have no
+    # acceptance criteria when the requested capability is unclear.
+    # In that situation, clarification is more useful than invented
+    # requirements.
 
     if (
         confidence == "low"
@@ -294,6 +315,17 @@ def _validate_assessment(result):
         validated["open_questions"].append(
             "Can the reporter provide more information about "
             "the intended functionality?"
+        )
+
+    # Medium- and high-confidence assessments must contain at least
+    # one acceptance criterion.
+    if (
+        not validated["acceptance_criteria"]
+        and confidence != "low"
+    ):
+        raise ValueError(
+            "At least one acceptance criterion is required "
+            "for medium- or high-confidence assessments."
         )
 
     return validated

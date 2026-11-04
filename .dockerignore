@@ -2,28 +2,34 @@
 .git/
 .gitignore
 
-# Python environments
+# Local environment and secrets
+.env
+.env.*
+!.env.docker.example
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
+
+# Python environments and cache
 **/.venv/
 **/venv/
 backend/multi/
-
-# Python cache
+backend/multi/
 **/__pycache__/
 **/*.py[cod]
 **/*.log
-
-# Environment secrets
-backend/.env
-backend/.env.*
-
-# Frontend dependencies
-**/node_modules/
-**/.next/
-
-# Testing and tooling
 **/.pytest_cache/
 **/.mypy_cache/
 **/.ruff_cache/
+
+# Frontend dependencies/build output
+**/node_modules/
+**/.next/
+
+# Local backups and generated output
+backups/
+**/staticfiles/
 
 # OS files
 .DS_Store

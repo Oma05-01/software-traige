@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   skipTrailingSlashRedirect: true,
   partialPrefetching: true,
+  output: "standalone",
   turbopack: {
     rules: {
       "*.css": {

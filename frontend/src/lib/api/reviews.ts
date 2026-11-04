@@ -3,6 +3,9 @@ import { apiRequest } from "./client";
 import type {
   ReviewRequest,
   PaginatedReviewResponse,
+  ClassificationReview,
+  PaginatedClassificationReviewResponse,
+  ResolveClassificationPayload,
 } from "@/lib/types/review";
 
 type ReviewListResponse =
@@ -99,6 +102,50 @@ export async function reviseReview(
       body: JSON.stringify({
         proposed_payload: proposedPayload,
       }),
+    }
+  );
+}
+
+type ClassificationListResponse =
+  | ClassificationReview[]
+  | PaginatedClassificationReviewResponse;
+
+export async function getClassificationReviews(
+  status = "all",
+  workflowRunId?: string
+): Promise<ClassificationReview[]> {
+  const params = new URLSearchParams({ status });
+
+  if (workflowRunId) {
+    params.set("workflow_run_id", workflowRunId);
+  }
+
+  const response = await apiRequest<ClassificationListResponse>(
+    `/reviews/classifications/?${params.toString()}`
+  );
+
+  return Array.isArray(response)
+    ? response
+    : response.results;
+}
+
+export async function getClassificationReview(
+  reviewId: string
+): Promise<ClassificationReview> {
+  return apiRequest<ClassificationReview>(
+    `/reviews/classifications/${encodeURIComponent(reviewId)}/`
+  );
+}
+
+export async function resolveClassificationReview(
+  reviewId: string,
+  payload: ResolveClassificationPayload
+): Promise<ClassificationReview> {
+  return apiRequest<ClassificationReview>(
+    `/reviews/classifications/${encodeURIComponent(reviewId)}/resolve/`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
     }
   );
 }

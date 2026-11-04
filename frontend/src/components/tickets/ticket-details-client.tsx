@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowRight,
   CalendarDays,
   Clock3,
   Mail,
@@ -17,6 +18,13 @@ import type { Ticket } from "@/lib/types/ticket";
 import { getTicketWorkflow } from "@/lib/api/workflows";
 import type { WorkflowRun } from "@/lib/types/workflow";
 import { WorkflowTimeline } from "@/components/workflows/workflow-timeline";
+import {
+  getClassificationReviews,
+} from "@/lib/api/reviews";
+
+import type {
+  ClassificationReview,
+} from "@/lib/types/review";
 
 interface TicketDetailsClientProps {
   ticketId: string;
@@ -129,57 +137,100 @@ export function TicketDetailsClient({
   const [reload, setReload] = useState(0);
   const [workflow, setWorkflow] = useState<WorkflowRun | null>(null);
 const [workflowError, setWorkflowError] = useState<string | null>(null);
+const [classificationReview, setClassificationReview] =
+  useState<ClassificationReview | null>(null);
+
+const [classificationReviewError, setClassificationReviewError] =
+  useState<string | null>(null);
 
   useEffect(() => {
   let active = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   async function loadData() {
-    let shouldPoll = false;
+  let shouldPoll = false;
 
-    const [ticketResult, workflowResult] = await Promise.allSettled([
-      getTicket(ticketId),
-      getTicketWorkflow(ticketId),
-    ]);
+  const [ticketResult, workflowResult] = await Promise.allSettled([
+    getTicket(ticketId),
+    getTicketWorkflow(ticketId),
+  ]);
 
-    if (!active) return;
+  if (!active) return;
 
-    if (ticketResult.status === "fulfilled") {
-      setTicket(ticketResult.value);
-      setError(null);
-    } else {
-      setError(
-        ticketResult.reason instanceof Error
-          ? ticketResult.reason.message
-          : "Unable to load this ticket."
-      );
-    }
-
-    if (workflowResult.status === "fulfilled") {
-      const data = workflowResult.value;
-
-      setWorkflow(data);
-      setWorkflowError(null);
-
-      shouldPoll =
-        data.status === "queued" ||
-        data.status === "running";
-    } else {
-      setWorkflow(null);
-      setWorkflowError(
-        workflowResult.reason instanceof Error
-          ? workflowResult.reason.message
-          : "Workflow information is unavailable."
-      );
-    }
-
-    setLoading(false);
-
-    // Poll while automated processing is still active.
-    if (active && shouldPoll) {
-      timer = setTimeout(loadData, 5000);
-    }
+  if (ticketResult.status === "fulfilled") {
+    setTicket(ticketResult.value);
+    setError(null);
+  } else {
+    setError(
+      ticketResult.reason instanceof Error
+        ? ticketResult.reason.message
+        : "Unable to load this ticket."
+    );
   }
+
+  if (workflowResult.status === "fulfilled") {
+    const data = workflowResult.value;
+
+    setWorkflow(data);
+    setWorkflowError(null);
+
+    // Continue polling while automated processing is active.
+    shouldPoll =
+      data.status === "queued" ||
+      data.status === "running";
+
+    // Retrieve any classification review associated with this workflow.
+    try {
+      const classificationReviews = await getClassificationReviews(
+        "all",
+        data.id
+      );
+
+      if (!active) return;
+
+      const classification = classificationReviews[0] ?? null;
+
+      setClassificationReview(classification);
+      setClassificationReviewError(null);
+
+      // Also poll while a classification decision is pending.
+      if (
+        data.status === "awaiting_review" &&
+        classification?.status === "pending"
+      ) {
+        shouldPoll = true;
+      }
+    } catch (err) {
+      if (!active) return;
+
+      setClassificationReview(null);
+
+      setClassificationReviewError(
+        err instanceof Error
+          ? err.message
+          : "Classification review information is unavailable."
+      );
+    }
+  } else {
+    setWorkflow(null);
+    setClassificationReview(null);
+    setClassificationReviewError(null);
+
+    setWorkflowError(
+      workflowResult.reason instanceof Error
+        ? workflowResult.reason.message
+        : "Workflow information is unavailable."
+    );
+  }
+
+  setLoading(false);
+
+  // Poll every five seconds while processing or awaiting
+  // a classification decision.
+  if (active && shouldPoll) {
+    timer = setTimeout(loadData, 5000);
+  }
+}
 
   void loadData();
 
@@ -377,11 +428,147 @@ const [workflowError, setWorkflowError] = useState<string | null>(null);
         </DetailSection>
       </section>
 
-      <WorkflowTimeline
-        workflow={workflow}
-        category={ticket.category}
-        error={workflowError}
-      />
+      {classificationReview && (
+      <DetailSection title="Classification review">
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`rounded-full px-3 py-1 text-[11px] font-semibold ${
+                classificationReview.status === "pending"
+                  ? "bg-amber-50 text-amber-700"
+                  : "bg-emerald-50 text-emerald-700"
+              }`}
+            >
+              {formatLabel(classificationReview.status)}
+            </span>
+
+            {classificationReview.classification_confidence && (
+              <span className="text-xs text-slate-400">
+                Agent confidence:{" "}
+                {formatLabel(
+                  classificationReview.classification_confidence
+                )}
+              </span>
+            )}
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <DetailField
+              label="Receptionist suggestion"
+              value={formatLabel(
+                classificationReview.proposed_category
+              )}
+            />
+
+            <DetailField
+              label="Suggested priority"
+              value={formatLabel(
+                classificationReview.proposed_priority
+              )}
+            />
+          </div>
+
+          {classificationReview.status === "resolved" && (
+            <>
+              <div className="border-t border-[#edf0f4] pt-4">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Staff-confirmed classification
+                </p>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <DetailField
+                  label="Final category"
+                  value={
+                    classificationReview.resolved_category
+                      ? formatLabel(
+                          classificationReview.resolved_category
+                        )
+                      : "Not available"
+                  }
+                />
+
+                <DetailField
+                  label="Final priority"
+                  value={
+                    classificationReview.resolved_priority
+                      ? formatLabel(
+                          classificationReview.resolved_priority
+                        )
+                      : "Not available"
+                  }
+                />
+
+                <DetailField
+                  label="Reviewed by"
+                  value={
+                    classificationReview.reviewed_by_username
+                  }
+                />
+
+                <DetailField
+                  label="Reviewed at"
+                  value={
+                    classificationReview.reviewed_at
+                      ? formatDate(classificationReview.reviewed_at)
+                      : "Not available"
+                  }
+                />
+              </div>
+
+              {classificationReview.decision_note && (
+                <div>
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                    Decision note
+                  </p>
+
+                  <p className="mt-1 whitespace-pre-wrap text-sm text-[#34465f]">
+                    {classificationReview.decision_note}
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+
+          {classificationReview.status === "pending" && (
+            <p className="text-xs leading-6 text-slate-500">
+              The Receptionist&apos;s suggestion has not yet become
+              the ticket&apos;s official classification. A staff
+              decision is required before specialist processing
+              can continue.
+            </p>
+          )}
+
+          <div className="border-t border-[#edf0f4] pt-4">
+            <Link
+              href={`/reviews/classifications/${encodeURIComponent(
+                classificationReview.id
+              )}`}
+              className="inline-flex items-center gap-2 text-xs font-semibold text-[#365a88] hover:text-[#203d61]"
+            >
+              {classificationReview.status === "pending"
+                ? "Review classification"
+                : "View classification decision"}
+              <ArrowRight size={14} />
+            </Link>
+          </div>
+        </div>
+      </DetailSection>
+    )}
+
+    {classificationReviewError && (
+      <p className="text-xs text-amber-700">
+        Classification review details could not be loaded:{" "}
+        {classificationReviewError}
+      </p>
+    )}
+
+    <WorkflowTimeline
+      workflow={workflow}
+      category={ticket.category}
+      classificationReview={classificationReview}
+      error={workflowError}
+    />
 
       {/* Workflow reference */}
       {ticket.workflow_id && (

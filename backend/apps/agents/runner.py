@@ -25,7 +25,7 @@ from apps.workflow.services import (
     record_workflow_event,
 )
 from .implementations.receptionist import classify_ticket
-
+from apps.reviews.services import create_classification_review
 
 logger = logging.getLogger(__name__)
 
@@ -154,21 +154,25 @@ def persist_receptionist_result(execution, result):
             .get(pk=ticket_id)
         )
 
-        ticket.category = result["category"]
-        ticket.priority = result["priority"]
+        if not result["needs_human_review"]:
+            ticket.category = result["category"]
+            ticket.priority = result["priority"]
 
-        ticket.save(
-            update_fields=[
-                "category",
-                "priority",
-                "updated_at",
-            ]
-        )
+            ticket.save(
+                update_fields=[
+                    "category",
+                    "priority",
+                    "updated_at",
+                ]
+            )
 
         completed_execution = complete_agent_execution(
             execution.id,
             output_payload=result,
         )
+
+        if result["needs_human_review"]:
+            create_classification_review(completed_execution.id)
 
         record_workflow_event(
             workflow_id=workflow_id,

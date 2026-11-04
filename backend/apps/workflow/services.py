@@ -293,6 +293,8 @@ ALLOWED_STAGE_TRANSITIONS = {
     WorkflowRun.Stage.HUMAN_REVIEW: {
         WorkflowRun.Stage.RECEPTIONIST,
         WorkflowRun.Stage.SUPPORT_REP,
+        WorkflowRun.Stage.DEBUGGER,
+        WorkflowRun.Stage.PRODUCT_MANAGER,
     },
 }
 
