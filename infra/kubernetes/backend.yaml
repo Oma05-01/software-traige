@@ -1,0 +1,105 @@
+﻿apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: software-triage
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: backend
+          image: software-triage-backend:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - python manage.py collectstatic --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 60 --access-logfile - --error-logfile -
+          envFrom:
+            - secretRef:
+                name: software-triage-env
+            - configMapRef:
+                name: software-triage-config
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: CELERY_BROKER_URL
+              value: redis://redis:6379/0
+            - name: CELERY_TASK_ALWAYS_EAGER
+              value: "false"
+          startupProbe:
+            httpGet:
+              path: /api/health/live/
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /api/health/
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/health/live/
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: localhost
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: software-triage
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
