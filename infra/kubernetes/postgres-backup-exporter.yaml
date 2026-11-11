@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-backup-exporter
+  namespace: software-triage
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres-backup-exporter
+  template:
+    metadata:
+      labels:
+        app: postgres-backup-exporter
+    spec:
+      containers:
+        - name: exporter
+          image: postgres:18-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - while true; do sleep 3600; done
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: backup-storage
+              mountPath: /backups
+              readOnly: true
+      volumes:
+        - name: backup-storage
+          persistentVolumeClaim:
+            claimName: postgres-backups

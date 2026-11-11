@@ -1,0 +1,134 @@
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: software-triage
+spec:
+  schedule: "0 */6 * * *"
+  timeZone: Africa/Lagos
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+
+      template:
+        metadata:
+          labels:
+            app: postgres-backup
+
+        spec:
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 30
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+
+          containers:
+            - name: postgres-backup
+              image: postgres:18-alpine
+              imagePullPolicy: IfNotPresent
+
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  umask 077
+
+                  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+
+                  backup_file="/backups/software-triage-${timestamp}.dump"
+                  partial_file="${backup_file}.partial"
+
+                  trap 'rm -f "$partial_file"' EXIT
+
+                  echo "Starting PostgreSQL backup."
+                  echo "Database: $PGDATABASE"
+                  echo "Started: $(date -u)"
+
+                  pg_dump \
+                    --format=custom \
+                    --no-owner \
+                    --no-acl \
+                    --file="$partial_file" \
+                    "$PGDATABASE"
+
+                  echo "Validating backup archive."
+
+                  pg_restore --list "$partial_file" > /dev/null
+
+                  mv "$partial_file" "$backup_file"
+                  chmod 600 "$backup_file"
+
+                  echo "Backup archive validated."
+                  sha256sum "$backup_file"
+
+                  echo "Applying approximately 14-day retention."
+
+                  find /backups \
+                    -type f \
+                    -name 'software-triage-*.dump' \
+                    -mtime +13 \
+                    -print \
+                    -delete
+
+                  echo "Backup completed: $backup_file"
+
+              env:
+                - name: PGHOST
+                  value: postgres
+
+                - name: PGPORT
+                  value: "5432"
+
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: software-triage-env
+                      key: DB_NAME
+
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: software-triage-env
+                      key: DB_USER
+
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: software-triage-env
+                      key: DB_PASSWORD
+
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+
+              volumeMounts:
+                - name: backup-storage
+                  mountPath: /backups
+
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: postgres-backups
+                
