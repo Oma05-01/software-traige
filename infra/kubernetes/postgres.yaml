@@ -84,8 +84,8 @@ spec:
                 - sh
                 - -c
                 - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-            periodSeconds: 5
-            timeoutSeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
             failureThreshold: 6
 
           livenessProbe:
@@ -95,7 +95,7 @@ spec:
                 - -c
                 - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
             periodSeconds: 15
-            timeoutSeconds: 5
+            timeoutSeconds: 10
             failureThreshold: 6
 
           resources:

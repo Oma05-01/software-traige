@@ -46,16 +46,4 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
-          readinessProbe:
-            exec:
-              command:
-                - celery
-                - -A
-                - config
-                - inspect
-                - ping
-                - --timeout=5
-            initialDelaySeconds: 15
-            periodSeconds: 20
-            timeoutSeconds: 10
-            failureThreshold: 3
+        
