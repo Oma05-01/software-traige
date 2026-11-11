@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: software-triage-migrate
+  namespace: software-triage
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: software-triage-migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: software-triage-backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - manage.py
+            - migrate
+            - --noinput
+          envFrom:
+            - secretRef:
+                name: software-triage-env
+            - configMapRef:
+                name: software-triage-config
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: CELERY_BROKER_URL
+              value: redis://redis:6379/0
+            - name: CELERY_TASK_ALWAYS_EAGER
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
