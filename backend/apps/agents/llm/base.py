@@ -1,3 +1,4 @@
+
 from typing import Protocol, Sequence
 
 
@@ -7,6 +8,18 @@ class LLMProviderError(Exception):
 
 class LLMConfigurationError(LLMProviderError):
     """Raised when an LLM provider is incorrectly configured."""
+
+
+class LLMTransientError(LLMProviderError):
+    """Raised for temporary provider failures that may be retried."""
+
+
+class LLMRequestError(LLMProviderError):
+    """Raised when the provider rejects a request permanently."""
+
+
+class LLMResponseError(LLMProviderError):
+    """Raised when the provider returns an unusable response."""
 
 
 class LLMProvider(Protocol):
