@@ -69,7 +69,7 @@ def build_receptionist_input(ticket):
     }
 
 
-def get_or_create_receptionist_execution(workflow):
+def get_or_create_receptionist_execution(workflow,redelivered=False):
     """
     Retrieve an existing Receptionist execution when possible.
 
@@ -95,7 +95,7 @@ def get_or_create_receptionist_execution(workflow):
             return latest, False
 
         if latest.status == AgentExecution.Status.RUNNING:
-            return latest, False
+            return latest, redelivered
 
         if latest.status == AgentExecution.Status.QUEUED:
             return latest, True
@@ -132,13 +132,17 @@ def get_or_create_receptionist_execution(workflow):
         ):
             return (
                 active,
-                active.status == AgentExecution.Status.QUEUED,
+                active.status == AgentExecution.Status.QUEUED
+                or (
+                    active.status == AgentExecution.Status.RUNNING
+                    and redelivered
+                ),
             )
 
         raise
 
 
-def persist_receptionist_result(execution, result):
+def persist_receptionist_result(execution, result, claim_token=None):
     """
     Persist classification, execution output and routing
     decisions within a database transaction.
@@ -170,7 +174,7 @@ def persist_receptionist_result(execution, result):
 
         completed_execution = complete_agent_execution(
             execution.id,
-            output_payload=result,
+            output_payload=result, claim_token=claim_token,
         )
 
         if result["needs_human_review"]:
@@ -229,7 +233,7 @@ def persist_receptionist_result(execution, result):
     return completed_execution
 
 
-def run_receptionist(workflow_id, celery_task_id=None):
+def run_receptionist(workflow_id, celery_task_id=None, redelivered=False):
     """
     Execute the Receptionist against a running workflow.
 
@@ -266,8 +270,9 @@ def run_receptionist(workflow_id, celery_task_id=None):
             "The Receptionist requires a running workflow."
         )
 
-    execution, should_start = (
-        get_or_create_receptionist_execution(workflow)
+    execution, should_start = get_or_create_receptionist_execution(
+        workflow,
+        redelivered=redelivered,
     )
 
     if not should_start:
@@ -276,6 +281,7 @@ def run_receptionist(workflow_id, celery_task_id=None):
     execution, claimed = start_agent_execution(
         execution.id,
         celery_task_id=celery_task_id,
+        redelivered=redelivered,
     )
 
     # Another worker or request already claimed execution.
@@ -290,6 +296,7 @@ def run_receptionist(workflow_id, celery_task_id=None):
         return persist_receptionist_result(
             execution,
             result,
+            claim_token=execution.claim_token,
         )
 
     except LLMTransientError:
@@ -300,7 +307,10 @@ def run_receptionist(workflow_id, celery_task_id=None):
         )
 
         try:
-            record_transient_agent_failure(execution.id)
+            record_transient_agent_failure(
+                execution.id,
+                claim_token=execution.claim_token,
+            )
 
         except Exception:
             logger.exception(
@@ -326,18 +336,10 @@ def run_receptionist(workflow_id, celery_task_id=None):
                     "Receptionist processing failed. "
                     "Check application logs for details."
                 ),
+                claim_token=execution.claim_token,
+                fail_workflow=True,
+                workflow_failure_source=WorkflowEvent.Source.AGENT,
             )
-
-            current_workflow = WorkflowRun.objects.get(
-                pk=workflow_id
-            )
-
-            if current_workflow.status == WorkflowRun.Status.RUNNING:
-                transition_workflow(
-                    workflow_id,
-                    WorkflowRun.Status.FAILED,
-                    source=WorkflowEvent.Source.AGENT,
-                )
 
         except Exception:
             logger.exception(

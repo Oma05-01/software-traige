@@ -95,10 +95,16 @@ def get_effective_receptionist_output(workflow):
         "priority": ticket.priority,
     }
 
-def get_or_create_product_manager_execution(workflow):
+
+def get_or_create_product_manager_execution(
+    workflow,
+    redelivered=False,
+):
     """Retrieve or create a Product Manager execution."""
 
-    receptionist_output = get_effective_receptionist_output(workflow)
+    receptionist_output = get_effective_receptionist_output(
+        workflow
+    )
 
     latest = AgentExecution.objects.filter(
         workflow_run=workflow,
@@ -106,17 +112,20 @@ def get_or_create_product_manager_execution(workflow):
     ).order_by("-attempt").first()
 
     if latest:
+
         if latest.status in {
             AgentExecution.Status.SUCCEEDED,
             AgentExecution.Status.SKIPPED,
-            AgentExecution.Status.RUNNING,
         }:
             return latest, False
+
+        if latest.status == AgentExecution.Status.RUNNING:
+            return latest, redelivered
 
         if latest.status == AgentExecution.Status.QUEUED:
             return latest, True
 
-        # Failed executions may be retried.
+        # Failed executions may be retried as a new attempt.
 
     try:
         execution = create_agent_execution(
@@ -146,14 +155,18 @@ def get_or_create_product_manager_execution(workflow):
         ):
             return (
                 active,
-                active.status == AgentExecution.Status.QUEUED,
+                active.status == AgentExecution.Status.QUEUED
+                or (
+                    active.status == AgentExecution.Status.RUNNING
+                    and redelivered
+                ),
             )
 
         raise
 
 
 @transaction.atomic
-def persist_product_manager_result(execution, result):
+def persist_product_manager_result(execution, result,claim_token=None):
     """
     Persist the assessment and advance to Support Rep.
 
@@ -202,6 +215,7 @@ def persist_product_manager_result(execution, result):
     completed_execution = complete_agent_execution(
         execution.id,
         output_payload=result,
+        claim_token=claim_token,
     )
 
     record_workflow_event(
@@ -236,7 +250,7 @@ def persist_product_manager_result(execution, result):
 
 
 
-def run_product_manager(workflow_id, celery_task_id=None):
+def run_product_manager(workflow_id, celery_task_id=None, redelivered=False):
     """Execute the Product Manager for a running feature workflow."""
 
     workflow = WorkflowRun.objects.select_related("ticket").get(
@@ -269,8 +283,9 @@ def run_product_manager(workflow_id, celery_task_id=None):
             "The Product Manager only processes feature requests."
         )
 
-    execution, should_start = (
-        get_or_create_product_manager_execution(workflow)
+    execution, should_start = get_or_create_product_manager_execution(
+        workflow,
+        redelivered=redelivered,
     )
 
     if not should_start:
@@ -279,6 +294,7 @@ def run_product_manager(workflow_id, celery_task_id=None):
     execution, claimed = start_agent_execution(
         execution.id,
         celery_task_id=celery_task_id,
+        redelivered=redelivered,
     )
 
     if not claimed:
@@ -295,6 +311,7 @@ def run_product_manager(workflow_id, celery_task_id=None):
         completed_execution = persist_product_manager_result(
             execution,
             result,
+            claim_token=execution.claim_token,
         )
 
         logger.info(
@@ -312,7 +329,10 @@ def run_product_manager(workflow_id, celery_task_id=None):
         )
 
         try:
-            record_transient_agent_failure(execution.id)
+            record_transient_agent_failure(
+                execution.id,
+                claim_token=execution.claim_token,
+            )
 
         except Exception:
             logger.exception(
@@ -331,17 +351,6 @@ def run_product_manager(workflow_id, celery_task_id=None):
         )
 
         try:
-            current_workflow = WorkflowRun.objects.get(
-                pk=workflow_id
-            )
-
-            if current_workflow.status == WorkflowRun.Status.RUNNING:
-                transition_workflow(
-                    workflow_id,
-                    WorkflowRun.Status.FAILED,
-                    source=WorkflowEvent.Source.AGENT,
-                )
-
             fail_agent_execution(
                 execution.id,
                 error_code="PRODUCT_MANAGER_EXECUTION_FAILED",
@@ -349,6 +358,9 @@ def run_product_manager(workflow_id, celery_task_id=None):
                     "Product Manager processing failed. "
                     "Check application logs for details."
                 ),
+                claim_token=execution.claim_token,
+                fail_workflow=True,
+                workflow_failure_source=WorkflowEvent.Source.AGENT,
             )
 
         except Exception:
@@ -357,5 +369,4 @@ def run_product_manager(workflow_id, celery_task_id=None):
                 "for execution %s",
                 execution.id,
             )
-
         raise

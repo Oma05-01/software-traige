@@ -19,6 +19,15 @@ from apps.agents.retry_policy import (
 
 logger = logging.getLogger(__name__)
 
+def _is_redelivered(task):
+    """Return whether the broker redelivered this task message."""
+
+    delivery_info = (
+        getattr(task.request, "delivery_info", None) or {}
+    )
+
+    return bool(delivery_info.get("redelivered", False))
+
 
 def record_dispatch_failure(workflow_id, agent_type, exc):
     """Record a dispatch failure and fail the affected workflow."""
@@ -130,6 +139,7 @@ def process_ticket_workflow(self, workflow_id):
         execution = run_receptionist(
             workflow.id,
             celery_task_id=self.request.id,
+            redelivered=_is_redelivered(self),
         )
 
     except LLMTransientError as exc:
@@ -199,9 +209,10 @@ def process_debugger_workflow(self, workflow_id):
 
     try:
         execution = run_debugger(
-            workflow.id,
-            celery_task_id=self.request.id,
-        )
+        workflow.id,
+        celery_task_id=self.request.id,
+        redelivered=_is_redelivered(self),
+    )
 
     except LLMTransientError as exc:
         handle_transient_agent_failure(
@@ -255,6 +266,7 @@ def process_support_rep_workflow(self, workflow_id):
         execution = run_support_rep(
             workflow.id,
             celery_task_id=self.request.id,
+            redelivered=_is_redelivered(self),
         )
 
     except LLMTransientError as exc:
@@ -296,6 +308,7 @@ def process_product_manager_workflow(self, workflow_id):
         execution = run_product_manager(
             workflow.id,
             celery_task_id=self.request.id,
+            redelivered=_is_redelivered(self),
         )
 
     except LLMTransientError as exc:

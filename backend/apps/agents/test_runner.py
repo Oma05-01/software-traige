@@ -11,7 +11,10 @@ from apps.workflow.services import (
 )
 from apps.events.models import WorkflowEvent
 from apps.agents.llm.base import LLMTransientError
-
+from apps.agents.services import (
+    create_agent_execution,
+    start_agent_execution,
+)
 from .models import AgentExecution
 from .runner import run_receptionist
 from apps.reviews.models import ClassificationReview
@@ -294,4 +297,49 @@ class ReceptionistRunnerTests(TestCase):
         self.assertEqual(
             self.workflow.status,
             WorkflowRun.Status.RUNNING,
+        )
+
+
+    def test_redelivery_recovers_existing_receptionist_execution(self):
+        task_id = "receptionist-worker-loss-test"
+
+        execution = create_agent_execution(
+            self.workflow.id,
+            AgentExecution.AgentType.RECEPTIONIST,
+            {"ticket_id": str(self.ticket.id)},
+        )
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id=task_id,
+        )
+
+        self.assertTrue(claimed)
+        original_id = execution.id
+        original_token = execution.claim_token
+
+        recovered = run_receptionist(
+            self.workflow.id,
+            celery_task_id=task_id,
+            redelivered=True,
+        )
+
+        recovered.refresh_from_db()
+
+        self.assertEqual(recovered.id, original_id)
+        self.assertEqual(recovered.attempt, 1)
+        self.assertEqual(recovered.worker_loss_recoveries, 1)
+        self.assertNotEqual(recovered.claim_token, original_token)
+
+        self.assertEqual(
+            recovered.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        self.assertEqual(
+            AgentExecution.objects.filter(
+                workflow_run=self.workflow,
+                agent_type=AgentExecution.AgentType.RECEPTIONIST,
+            ).count(),
+            1,
         )

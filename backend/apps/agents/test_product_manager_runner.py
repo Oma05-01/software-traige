@@ -11,6 +11,10 @@ from apps.workflow.services import (
     advance_workflow_stage,
 )
 from apps.agents.models import AgentExecution
+from apps.agents.services import (
+    create_agent_execution,
+    start_agent_execution,
+)
 
 from .product_manager_runner import (
     ProductManagerNotReady,
@@ -254,3 +258,63 @@ class ProductManagerRunnerTests(TestCase):
         )
 
         self.assertEqual(mock_assessment.call_count, 2)
+
+    def test_redelivery_recovers_existing_product_manager_execution(self):
+        task_id = "product-manager-worker-loss-test"
+
+        execution = create_agent_execution(
+            self.workflow.id,
+            AgentExecution.AgentType.PRODUCT_MANAGER,
+            {"ticket_id": str(self.ticket.id)},
+        )
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id=task_id,
+        )
+
+        self.assertTrue(claimed)
+        original_id = execution.id
+        original_token = execution.claim_token
+
+        successful_result = {
+            "assessment_status": "pending_human_review",
+            "assessment_confidence": "medium",
+            "acceptance_criteria": [
+                "Users can export report data as CSV."
+            ],
+            "considerations": [],
+            "open_questions": [],
+            "requires_human_review": True,
+            "approval_status": "not_approved",
+        }
+
+        with patch(
+            "apps.agents.product_manager_runner.assess_feature_request",
+            return_value=successful_result,
+        ):
+            recovered = run_product_manager(
+                self.workflow.id,
+                celery_task_id=task_id,
+                redelivered=True,
+            )
+
+        recovered.refresh_from_db()
+
+        self.assertEqual(recovered.id, original_id)
+        self.assertEqual(recovered.attempt, 1)
+        self.assertEqual(recovered.worker_loss_recoveries, 1)
+        self.assertNotEqual(recovered.claim_token, original_token)
+
+        self.assertEqual(
+            recovered.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        self.assertEqual(
+            AgentExecution.objects.filter(
+                workflow_run=self.workflow,
+                agent_type=AgentExecution.AgentType.PRODUCT_MANAGER,
+            ).count(),
+            1,
+        )

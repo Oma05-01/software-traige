@@ -8,6 +8,7 @@ from apps.agents.services import (
     create_agent_execution,
     start_agent_execution,
 )
+from apps.agents.services import StaleAgentExecutionClaim
 from apps.agents.llm.base import LLMTransientError
 from apps.agents.support_rep_runner import (
     SupportRepNotReady,
@@ -15,6 +16,7 @@ from apps.agents.support_rep_runner import (
     run_support_rep,
     build_support_rep_input,
     get_support_context,
+    persist_support_response
 )
 from apps.events.models import WorkflowEvent
 from apps.tickets.models import Ticket
@@ -562,4 +564,127 @@ class FeatureSupportRepContextTests(TestCase):
         self.assertIs(
             get_support_rep_drafter(),
             draft_support_response_llm,
+        )
+
+
+    def test_redelivery_recovers_existing_support_rep_execution(self):
+        task_id = "support-rep-worker-loss-test"
+
+        execution = create_agent_execution(
+            self.workflow.id,
+            AgentExecution.AgentType.SUPPORT_REP,
+            {"ticket_id": str(self.ticket.id)},
+        )
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id=task_id,
+        )
+
+        self.assertTrue(claimed)
+        original_id = execution.id
+        original_token = execution.claim_token
+
+        recovered = run_support_rep(
+            self.workflow.id,
+            celery_task_id=task_id,
+            redelivered=True,
+        )
+
+        recovered.refresh_from_db()
+
+        self.assertEqual(recovered.id, original_id)
+        self.assertEqual(recovered.attempt, 1)
+        self.assertEqual(recovered.worker_loss_recoveries, 1)
+        self.assertNotEqual(recovered.claim_token, original_token)
+
+        self.assertEqual(
+            recovered.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        self.assertEqual(
+            AgentExecution.objects.filter(
+                workflow_run=self.workflow,
+                agent_type=AgentExecution.AgentType.SUPPORT_REP,
+            ).count(),
+            1,
+        )
+
+        self.assertEqual(
+            ReviewRequest.objects.filter(
+                agent_execution__workflow_run=self.workflow,
+            ).count(),
+            1,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.AWAITING_REVIEW,
+        )
+
+
+    def test_stale_worker_cannot_create_support_review_request(self):
+        execution = create_agent_execution(
+            self.workflow.id,
+            AgentExecution.AgentType.SUPPORT_REP,
+            {"ticket_id": str(self.ticket.id)},
+        )
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="support-rep-stale-worker-test",
+        )
+
+        self.assertTrue(claimed)
+        stale_token = execution.claim_token
+
+        recovered, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="support-rep-stale-worker-test",
+            redelivered=True,
+        )
+
+        self.assertTrue(claimed)
+
+        result = {
+            "draft_status": "pending_human_review",
+            "external_send_authorized": False,
+            "response_type": "technical_guidance",
+            "evidence_references": [],
+            "follow_up_questions": [],
+        }
+
+        with self.assertRaises(StaleAgentExecutionClaim):
+            persist_support_response(
+                execution,
+                result,
+                claim_token=stale_token,
+            )
+
+        self.assertFalse(
+            ReviewRequest.objects.filter(
+                agent_execution__workflow_run=self.workflow,
+            ).exists()
+        )
+
+        execution.refresh_from_db()
+
+        self.assertEqual(
+            execution.status,
+            AgentExecution.Status.RUNNING,
+        )
+
+        self.assertEqual(
+            execution.claim_token,
+            recovered.claim_token,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.RUNNING,
         )

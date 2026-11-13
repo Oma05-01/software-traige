@@ -246,8 +246,13 @@ def get_or_create_support_rep_execution(workflow):
         raise
 
 
+
 @transaction.atomic
-def persist_support_response(execution, result):
+def persist_support_response(
+    execution,
+    result,
+    claim_token=None,
+):
     """
     Complete the Support Rep execution, record the draft event,
     advance to Human Review, and move the workflow to awaiting_review.
@@ -256,15 +261,23 @@ def persist_support_response(execution, result):
     """
 
     if not isinstance(result, dict):
-        raise TypeError("Support Rep result must be a dictionary.")
+        raise TypeError(
+            "Support Rep result must be a dictionary."
+        )
 
     current_execution = AgentExecution.objects.get(
         pk=execution.pk,
     )
 
-    # Protect against duplicate calls after successful completion.
+    # Validate ownership even when the execution has already
+    # completed. This prevents an obsolete worker from bypassing
+    # the fencing check through the idempotency shortcut.
     if current_execution.status == AgentExecution.Status.SUCCEEDED:
-        return current_execution
+        return complete_agent_execution(
+            current_execution.id,
+            output_payload=current_execution.output_payload,
+            claim_token=claim_token,
+        )
 
     workflow = current_execution.workflow_run
 
@@ -291,6 +304,7 @@ def persist_support_response(execution, result):
     completed_execution = complete_agent_execution(
         current_execution.id,
         result,
+        claim_token=claim_token,
     )
 
     review_request = create_review_request(
@@ -317,13 +331,11 @@ def persist_support_response(execution, result):
         },
     )
 
-    # SUPPORT_REP -> HUMAN_REVIEW
     advance_workflow_stage(
         workflow.id,
         WorkflowRun.Stage.HUMAN_REVIEW,
     )
 
-    # RUNNING -> AWAITING_REVIEW
     transition_workflow(
         workflow.id,
         WorkflowRun.Status.AWAITING_REVIEW,
@@ -333,7 +345,12 @@ def persist_support_response(execution, result):
 
 
 
-def run_support_rep(workflow_id, celery_task_id=None):
+
+def run_support_rep(
+    workflow_id,
+    celery_task_id=None,
+    redelivered=False,
+):
     """
     Execute the Support Rep for a workflow at the Support Rep stage.
 
@@ -372,6 +389,7 @@ def run_support_rep(workflow_id, celery_task_id=None):
         execution, should_execute = start_agent_execution(
             execution.id,
             celery_task_id=celery_task_id,
+            redelivered=redelivered,
         )
 
         # Another delivery may already have started this execution.
@@ -392,6 +410,7 @@ def run_support_rep(workflow_id, celery_task_id=None):
         completed_execution = persist_support_response(
             execution,
             result,
+            claim_token=execution.claim_token,
         )
 
         logger.info(
@@ -411,7 +430,10 @@ def run_support_rep(workflow_id, celery_task_id=None):
 
         if execution is not None:
             try:
-                record_transient_agent_failure(execution.id)
+                record_transient_agent_failure(
+                    execution.id,
+                    claim_token=execution.claim_token,
+                )
 
             except Exception:
                 logger.exception(
@@ -431,37 +453,19 @@ def run_support_rep(workflow_id, celery_task_id=None):
         )
 
         if execution is not None:
-            # Follow the workflow lock order used by the other runners.
-            try:
-                current_workflow = WorkflowRun.objects.get(
-                    pk=workflow.id,
-                )
-
-                if current_workflow.status in (
-                    WorkflowRun.Status.QUEUED,
-                    WorkflowRun.Status.RUNNING,
-                ):
-                    transition_workflow(
-                        workflow.id,
-                        WorkflowRun.Status.FAILED,
-                    )
-
-            except Exception:
-                logger.exception(
-                    "Could not mark workflow %s as failed.",
-                    workflow.id,
-                )
-
             try:
                 fail_agent_execution(
                     execution.id,
                     error_code=type(exc).__name__,
                     error_message=str(exc),
+                    claim_token=execution.claim_token,
+                    fail_workflow=True,
                 )
 
             except Exception:
                 logger.exception(
-                    "Could not mark Support Rep execution %s as failed.",
+                    "Could not mark Support Rep execution %s "
+                    "as failed.",
                     execution.id,
                 )
 
