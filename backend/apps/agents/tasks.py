@@ -12,7 +12,10 @@ from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
 from apps.workflow.services import transition_workflow
 from apps.agents.product_manager_runner import run_product_manager
-
+from apps.agents.llm.base import LLMTransientError
+from apps.agents.retry_policy import (
+    handle_transient_agent_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,10 +126,20 @@ def process_ticket_workflow(self, workflow_id):
     elif workflow.status != WorkflowRun.Status.RUNNING:
         return None
 
-    execution = run_receptionist(
-        workflow.id,
-        celery_task_id=self.request.id,
-    )
+    try:
+        execution = run_receptionist(
+            workflow.id,
+            celery_task_id=self.request.id,
+        )
+
+    except LLMTransientError as exc:
+        handle_transient_agent_failure(
+            task=self,
+            workflow_id=workflow.id,
+            agent_type="receptionist",
+            exc=exc,
+        )
+        return None
 
     workflow.refresh_from_db(
         fields=["status", "current_stage"],
@@ -184,10 +197,20 @@ def process_debugger_workflow(self, workflow_id):
     if workflow.ticket.category != Ticket.Category.BUG:
         return None
 
-    execution = run_debugger(
-        workflow.id,
-        celery_task_id=self.request.id,
-    )
+    try:
+        execution = run_debugger(
+            workflow.id,
+            celery_task_id=self.request.id,
+        )
+
+    except LLMTransientError as exc:
+        handle_transient_agent_failure(
+            task=self,
+            workflow_id=workflow.id,
+            agent_type="debugger",
+            exc=exc,
+        )
+        return None
 
     workflow.refresh_from_db(
         fields=["status", "current_stage"],
@@ -228,10 +251,20 @@ def process_support_rep_workflow(self, workflow_id):
     if workflow.current_stage != WorkflowRun.Stage.SUPPORT_REP:
         return None
 
-    execution = run_support_rep(
-        workflow.id,
-        celery_task_id=self.request.id,
-    )
+    try:
+        execution = run_support_rep(
+            workflow.id,
+            celery_task_id=self.request.id,
+        )
+
+    except LLMTransientError as exc:
+        handle_transient_agent_failure(
+            task=self,
+            workflow_id=workflow.id,
+            agent_type="support_rep",
+            exc=exc,
+        )
+        return None
 
     return str(execution.id)
 
@@ -259,10 +292,20 @@ def process_product_manager_workflow(self, workflow_id):
     if workflow.ticket.category != Ticket.Category.FEATURE:
         return None
 
-    execution = run_product_manager(
-        workflow.id,
-        celery_task_id=self.request.id,
-    )
+    try:
+        execution = run_product_manager(
+            workflow.id,
+            celery_task_id=self.request.id,
+        )
+
+    except LLMTransientError as exc:
+        handle_transient_agent_failure(
+            task=self,
+            workflow_id=workflow.id,
+            agent_type="product_manager",
+            exc=exc,
+        )
+        return None
 
     workflow.refresh_from_db(
         fields=["status", "current_stage"],
