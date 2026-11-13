@@ -7,6 +7,9 @@ from apps.events.models import WorkflowEvent
 
 from .models import AgentExecution
 
+import uuid
+
+from apps.tickets.models import Ticket
 
 class ActiveAgentExecutionExists(Exception):
     """Raised when a workflow already has an active agent execution."""
@@ -34,6 +37,8 @@ AGENT_STAGE_MAPPING = {
     AgentExecution.AgentType.SUPPORT_REP:
         WorkflowRun.Stage.SUPPORT_REP,
 }
+
+MAX_WORKER_LOSS_RECOVERIES = 2
 
 
 def _record_agent_event(
@@ -163,27 +168,125 @@ def create_agent_execution(
     return execution
 
 
+def _fail_execution_after_worker_loss(
+    workflow,
+    execution,
+):
+    """
+    Fail the execution and workflow when the worker-loss
+    recovery budget has been exhausted.
+
+    The caller must already hold locks on the ticket,
+    workflow and execution, in that order.
+    """
+
+    now = timezone.now()
+
+    execution.status = AgentExecution.Status.FAILED
+    execution.error_code = "WORKER_LOSS_RECOVERY_EXHAUSTED"
+    execution.error_message = (
+        "The worker repeatedly terminated before "
+        "the agent execution could complete."
+    )
+    execution.finished_at = now
+
+    execution.save(
+        update_fields=[
+            "status",
+            "error_code",
+            "error_message",
+            "finished_at",
+            "updated_at",
+        ]
+    )
+
+    WorkflowEvent.objects.create(
+        workflow_run=workflow,
+        event_type="agent.worker_loss_recovery_exhausted",
+        source=WorkflowEvent.Source.SYSTEM,
+        payload={
+            "agent_type": execution.agent_type,
+            "worker_loss_recoveries": (
+                execution.worker_loss_recoveries
+            ),
+            "max_recoveries": MAX_WORKER_LOSS_RECOVERIES,
+            "celery_task_id": execution.celery_task_id,
+        },
+    )
+
+    workflow.error_code = "AGENT_WORKER_LOSS_EXHAUSTED"
+    workflow.error_message = (
+        f"The {execution.agent_type} agent exhausted "
+        "its worker-loss recovery budget."
+    )
+
+    workflow.save(
+        update_fields=[
+            "error_code",
+            "error_message",
+            "updated_at",
+        ]
+    )
+
+    WorkflowEvent.objects.create(
+        workflow_run=workflow,
+        event_type="workflow.agent_worker_loss_recovery_exhausted",
+        source=WorkflowEvent.Source.SYSTEM,
+        payload={
+            "agent_type": execution.agent_type,
+            "execution_id": str(execution.id),
+            "worker_loss_recoveries": (
+                execution.worker_loss_recoveries
+            ),
+            "celery_task_id": execution.celery_task_id,
+        },
+    )
+
+    from apps.workflow.services import transition_workflow
+
+    transition_workflow(
+        workflow.id,
+        WorkflowRun.Status.FAILED,
+        source=WorkflowEvent.Source.SYSTEM,
+    )
+
+
 @transaction.atomic
 def start_agent_execution(
     execution_id,
     celery_task_id=None,
+    redelivered=False,
 ):
     """
-    Starts a queued agent execution.
+    Starts or safely recovers an agent execution.
 
     Returns:
         (execution, claimed)
 
-    claimed=True means this caller successfully
-    acquired the execution and may perform the work.
+    A normal duplicate delivery cannot claim an execution
+    that is already running.
 
-    claimed=False means another worker already started it.
+    A broker-redelivered task can reclaim an execution
+    only when its Celery task ID matches the original claim.
+
+    Each successful claim receives a fresh fencing token.
     """
 
     execution_reference = (
         AgentExecution.objects
         .only("workflow_run_id")
         .get(pk=execution_id)
+    )
+
+    ticket_id = WorkflowRun.objects.values_list(
+        "ticket_id",
+        flat=True,
+    ).get(pk=execution_reference.workflow_run_id)
+
+    # Maintain the global lock order:
+    # Ticket -> WorkflowRun -> AgentExecution.
+    Ticket.objects.select_for_update().get(
+        pk=ticket_id,
     )
 
     workflow = (
@@ -203,9 +306,58 @@ def start_agent_execution(
             "Cannot execute an agent for a non-running workflow."
         )
 
-    # Protect against duplicate background task delivery.
+    # An already-running execution is recoverable only
+    # through a genuine broker redelivery with the same
+    # Celery task ID.
     if execution.status == AgentExecution.Status.RUNNING:
-        return execution, False
+
+        if (
+            not redelivered
+            or not celery_task_id
+            or execution.celery_task_id != celery_task_id
+        ):
+            return execution, False
+
+        # The recovery budget is exhausted.
+        if (
+            execution.worker_loss_recoveries
+            >= MAX_WORKER_LOSS_RECOVERIES
+        ):
+            _fail_execution_after_worker_loss(
+                workflow,
+                execution,
+            )
+
+            return execution, False
+
+        # Reclaim the SAME execution with a new fencing token.
+        execution.worker_loss_recoveries += 1
+        execution.claim_token = uuid.uuid4()
+
+        execution.save(
+            update_fields=[
+                "worker_loss_recoveries",
+                "claim_token",
+                "updated_at",
+            ]
+        )
+
+        WorkflowEvent.objects.create(
+            workflow_run=workflow,
+            event_type="agent.worker_loss_recovered",
+            source=WorkflowEvent.Source.SYSTEM,
+            payload={
+                "agent_type": execution.agent_type,
+                "execution_id": str(execution.id),
+                "recovery_number": (
+                    execution.worker_loss_recoveries
+                ),
+                "max_recoveries": MAX_WORKER_LOSS_RECOVERIES,
+                "celery_task_id": celery_task_id,
+            },
+        )
+
+        return execution, True
 
     if execution.status != AgentExecution.Status.QUEUED:
         raise InvalidAgentExecutionTransition(
@@ -213,8 +365,11 @@ def start_agent_execution(
             f"{execution.status}."
         )
 
+    # Initial claim, including a redelivery that occurred
+    # before the execution had been claimed.
     execution.status = AgentExecution.Status.RUNNING
     execution.started_at = timezone.now()
+    execution.claim_token = uuid.uuid4()
 
     if celery_task_id:
         execution.celery_task_id = celery_task_id
@@ -224,6 +379,7 @@ def start_agent_execution(
             "status",
             "started_at",
             "celery_task_id",
+            "claim_token",
             "updated_at",
         ]
     )
@@ -237,7 +393,6 @@ def start_agent_execution(
     )
 
     return execution, True
-
 
 @transaction.atomic
 def complete_agent_execution(

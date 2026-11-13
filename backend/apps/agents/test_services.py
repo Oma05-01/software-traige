@@ -300,3 +300,174 @@ class AgentExecutionServiceTests(TestCase):
             self.create_execution(
                 input_payload="not-a-dictionary",
             )
+
+
+    def test_initial_claim_creates_fencing_token(self):
+        execution = self.create_execution()
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="task-123",
+        )
+
+        self.assertTrue(claimed)
+        self.assertIsNotNone(execution.claim_token)
+        self.assertEqual(execution.worker_loss_recoveries, 0)
+
+    def test_redelivered_task_recovers_same_execution(self):
+        execution = self.create_execution()
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="task-123",
+        )
+
+        self.assertTrue(claimed)
+
+        original_id = execution.id
+        original_attempt = execution.attempt
+        original_token = execution.claim_token
+
+        recovered, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="task-123",
+            redelivered=True,
+        )
+
+        self.assertTrue(claimed)
+        self.assertEqual(recovered.id, original_id)
+        self.assertEqual(recovered.attempt, original_attempt)
+        self.assertEqual(recovered.worker_loss_recoveries, 1)
+        self.assertNotEqual(
+            recovered.claim_token,
+            original_token,
+        )
+
+        self.assertEqual(
+            WorkflowEvent.objects.filter(
+                workflow_run=self.workflow,
+                event_type="agent.worker_loss_recovered",
+            ).count(),
+            1,
+        )
+
+    def test_redelivery_with_different_task_id_cannot_reclaim(self):
+        execution = self.create_execution()
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="original-task",
+        )
+
+        original_token = execution.claim_token
+
+        recovered, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="different-task",
+            redelivered=True,
+        )
+
+        self.assertFalse(claimed)
+        self.assertEqual(
+            recovered.claim_token,
+            original_token,
+        )
+        self.assertEqual(
+            recovered.worker_loss_recoveries,
+            0,
+        )
+
+        self.assertFalse(
+            WorkflowEvent.objects.filter(
+                workflow_run=self.workflow,
+                event_type="agent.worker_loss_recovered",
+            ).exists()
+        )
+
+    def test_queued_redelivery_does_not_count_as_recovery(self):
+        execution = self.create_execution()
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="task-queued",
+            redelivered=True,
+        )
+
+        self.assertTrue(claimed)
+        self.assertEqual(
+            execution.status,
+            AgentExecution.Status.RUNNING,
+        )
+        self.assertEqual(execution.worker_loss_recoveries, 0)
+
+    def test_worker_loss_recovery_budget_exhaustion_fails_workflow(self):
+        execution = self.create_execution()
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="task-123",
+        )
+
+        self.assertTrue(claimed)
+
+        # Allow exactly two recoveries of this execution.
+        for expected_recoveries in (1, 2):
+            execution, claimed = start_agent_execution(
+                execution.id,
+                celery_task_id="task-123",
+                redelivered=True,
+            )
+
+            self.assertTrue(claimed)
+            self.assertEqual(
+                execution.worker_loss_recoveries,
+                expected_recoveries,
+            )
+
+        # The next worker-loss redelivery exhausts the budget.
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="task-123",
+            redelivered=True,
+        )
+
+        self.assertFalse(claimed)
+
+        execution.refresh_from_db()
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            execution.status,
+            AgentExecution.Status.FAILED,
+        )
+
+        self.assertEqual(
+            execution.error_code,
+            "WORKER_LOSS_RECOVERY_EXHAUSTED",
+        )
+
+        self.assertEqual(
+            execution.worker_loss_recoveries,
+            2,
+        )
+
+        self.assertIsNotNone(execution.finished_at)
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.FAILED,
+        )
+
+        self.assertEqual(
+            self.workflow.error_code,
+            "AGENT_WORKER_LOSS_EXHAUSTED",
+        )
+
+        self.assertTrue(
+            WorkflowEvent.objects.filter(
+                workflow_run=self.workflow,
+                event_type=(
+                    "workflow.agent_worker_loss_recovery_exhausted"
+                ),
+            ).exists()
+        )

@@ -76,6 +76,18 @@ class AgentExecution(models.Model):
         db_index=True,
     )
 
+        # Worker-loss recovery
+    worker_loss_recoveries = models.PositiveSmallIntegerField(
+        default=0,
+    )
+
+    # Fencing token for the current worker claim.
+    claim_token = models.UUIDField(
+        null=True,
+        blank=True,
+        editable=False,
+    )
+
     # Execution timestamps
     started_at = models.DateTimeField(
         null=True,
