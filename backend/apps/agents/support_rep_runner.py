@@ -3,7 +3,7 @@ from apps.reviews.services import create_review_request
 from django.db import transaction
 from django.conf import settings
 from apps.tickets.models import Ticket
-
+from apps.agents.llm.base import LLMTransientError
 from apps.agents.implementations.support_rep import (
     draft_support_response,
 )
@@ -14,6 +14,7 @@ from apps.agents.services import (
     create_agent_execution,
     fail_agent_execution,
     start_agent_execution,
+    record_transient_agent_failure,
 )
 from apps.events.models import WorkflowEvent
 from apps.workflow.models import WorkflowRun
@@ -331,6 +332,7 @@ def persist_support_response(execution, result):
     return completed_execution
 
 
+
 def run_support_rep(workflow_id, celery_task_id=None):
     """
     Execute the Support Rep for a workflow at the Support Rep stage.
@@ -399,6 +401,27 @@ def run_support_rep(workflow_id, celery_task_id=None):
         )
 
         return completed_execution
+
+    except LLMTransientError:
+        logger.exception(
+            "Support Rep encountered a transient LLM failure "
+            "for workflow %s.",
+            workflow.id,
+        )
+
+        if execution is not None:
+            try:
+                record_transient_agent_failure(execution.id)
+
+            except Exception:
+                logger.exception(
+                    "Could not persist transient Support Rep failure "
+                    "for execution %s.",
+                    execution.id,
+                )
+                raise
+
+        raise
 
     except Exception as exc:
 

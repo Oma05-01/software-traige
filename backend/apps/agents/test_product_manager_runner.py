@@ -254,5 +254,3 @@ class ProductManagerRunnerTests(TestCase):
         )
 
         self.assertEqual(mock_assessment.call_count, 2)
-
-    

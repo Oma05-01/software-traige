@@ -8,6 +8,7 @@ from apps.agents.services import (
     create_agent_execution,
     start_agent_execution,
 )
+from apps.agents.llm.base import LLMTransientError
 from apps.agents.support_rep_runner import (
     SupportRepNotReady,
     get_support_rep_drafter,
@@ -320,6 +321,98 @@ class SupportRepRunnerTests(TestCase):
         self.assertEqual(
             self.workflow.status,
             WorkflowRun.Status.FAILED,
+        )
+
+    def test_transient_failure_allows_retry_without_duplicate_review(
+        self,
+    ):
+        with patch(
+            "apps.agents.support_rep_runner.draft_support_response",
+            side_effect=LLMTransientError(
+                "Groq request timed out."
+            ),
+        ) as mock_drafting:
+            with self.assertRaises(LLMTransientError):
+                run_support_rep(self.workflow.id)
+
+            mock_drafting.assert_called_once()
+
+        first_execution = AgentExecution.objects.get(
+            workflow_run=self.workflow,
+            agent_type="support_rep",
+            attempt=1,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            first_execution.status,
+            AgentExecution.Status.FAILED,
+        )
+
+        self.assertEqual(
+            first_execution.error_code,
+            "LLM_TRANSIENT_FAILURE",
+        )
+
+        self.assertIsNotNone(first_execution.finished_at)
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.RUNNING,
+        )
+
+        self.assertIsNone(self.workflow.finished_at)
+
+        # No review request should exist for the failed attempt.
+        self.assertFalse(
+            ReviewRequest.objects.filter(
+                agent_execution__workflow_run=self.workflow,
+            ).exists()
+        )
+
+        # The real deterministic implementation runs on retry.
+        second_execution = run_support_rep(self.workflow.id)
+
+        self.assertEqual(second_execution.attempt, 2)
+
+        self.assertEqual(
+            second_execution.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.AWAITING_REVIEW,
+        )
+
+        self.assertEqual(
+            self.workflow.current_stage,
+            WorkflowRun.Stage.HUMAN_REVIEW,
+        )
+
+        # Exactly one review request should exist.
+        review_requests = ReviewRequest.objects.filter(
+            agent_execution__workflow_run=self.workflow,
+            action_type=(
+                ReviewRequest.ActionType.SEND_SUPPORT_RESPONSE
+            ),
+        )
+
+        self.assertEqual(review_requests.count(), 1)
+
+        review_request = review_requests.get()
+
+        self.assertEqual(
+            review_request.agent_execution_id,
+            second_execution.id,
+        )
+
+        self.assertEqual(
+            review_request.status,
+            ReviewRequest.Status.PENDING,
         )
 
 class FeatureSupportRepContextTests(TestCase):
