@@ -4,6 +4,7 @@ from django.db import transaction
 from .implementations.debugger import investigate_ticket
 from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
+from apps.agents.llm.base import LLMTransientError
 from apps.workflow.services import (
     advance_workflow_stage,
     transition_workflow,
@@ -19,6 +20,7 @@ from .services import (
     start_agent_execution,
     complete_agent_execution,
     fail_agent_execution,
+    record_transient_agent_failure,
 )
 
 from .implementations.debugger import investigate_ticket
@@ -212,6 +214,7 @@ def persist_debugger_result(execution, result):
     return completed_execution
 
 
+
 def run_debugger(workflow_id, celery_task_id=None):
     """
     Execute the Debugger against a running workflow.
@@ -289,8 +292,27 @@ def run_debugger(workflow_id, celery_task_id=None):
             result,
         )
 
-    except Exception:
+    except LLMTransientError:
+        logger.exception(
+            "Debugger encountered a transient LLM failure "
+            "for workflow %s.",
+            workflow_id,
+        )
 
+        try:
+            record_transient_agent_failure(execution.id)
+
+        except Exception:
+            logger.exception(
+                "Could not persist transient Debugger failure "
+                "for execution %s.",
+                execution.id,
+            )
+            raise
+
+        raise
+
+    except Exception:
         logger.exception(
             "Debugger execution failed for workflow %s",
             workflow_id,

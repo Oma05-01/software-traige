@@ -11,6 +11,7 @@ from apps.workflow.services import (
 )
 from apps.agents.models import AgentExecution
 from apps.events.models import WorkflowEvent
+from apps.agents.llm.base import LLMTransientError
 from apps.knowledge.services import ingest_document
 
 from .debugger_runner import (
@@ -238,3 +239,58 @@ class DebuggerRunnerTests(TestCase):
 
         with self.assertRaises(DebuggerNotReady):
             run_debugger(self.workflow.id)
+
+    def test_debugger_transient_failure_allows_retry(self):
+
+        with patch(
+            "apps.agents.debugger_runner.investigate_ticket",
+            side_effect=LLMTransientError(
+                "Groq request timed out."
+            ),
+        ):
+            with self.assertRaises(LLMTransientError):
+                run_debugger(self.workflow.id)
+
+        first_execution = AgentExecution.objects.get(
+            workflow_run=self.workflow,
+            agent_type=AgentExecution.AgentType.DEBUGGER,
+            attempt=1,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            first_execution.status,
+            AgentExecution.Status.FAILED,
+        )
+
+        self.assertEqual(
+            first_execution.error_code,
+            "LLM_TRANSIENT_FAILURE",
+        )
+
+        self.assertIsNotNone(first_execution.finished_at)
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.RUNNING,
+        )
+
+        self.assertIsNone(self.workflow.finished_at)
+
+        # Retry using the deterministic Debugger implementation.
+        second_execution = run_debugger(self.workflow.id)
+
+        self.assertEqual(second_execution.attempt, 2)
+
+        self.assertEqual(
+            second_execution.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.RUNNING,
+        )
