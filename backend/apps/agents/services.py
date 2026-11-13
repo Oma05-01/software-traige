@@ -4,7 +4,7 @@ from django.utils import timezone
 
 from apps.workflow.models import WorkflowRun
 from apps.events.models import WorkflowEvent
-
+from apps.tickets.models import Ticket
 from .models import AgentExecution
 
 import uuid
@@ -18,9 +18,11 @@ class ActiveAgentExecutionExists(Exception):
 class WorkflowNotRunning(Exception):
     """Raised when an agent is assigned to an inactive workflow."""
 
-
 class InvalidAgentExecutionTransition(Exception):
     """Raised when an agent execution transition is invalid."""
+
+class StaleAgentExecutionClaim(InvalidAgentExecutionTransition):
+    """Raised when a worker attempts to use an obsolete claim token."""
 
 
 # Associate each agent with its workflow stage.
@@ -394,14 +396,19 @@ def start_agent_execution(
 
     return execution, True
 
+
 @transaction.atomic
 def complete_agent_execution(
     execution_id,
     output_payload=None,
+    claim_token=None,
 ):
     """
-    Marks an agent execution as successful
-    and persists its structured output.
+    Marks an agent execution as successful and persists
+    its structured output.
+
+    When claim_token is supplied, only the worker holding
+    the current claim may complete the execution.
     """
 
     if output_payload is None:
@@ -418,8 +425,19 @@ def complete_agent_execution(
         .get(pk=execution_id)
     )
 
+    ticket_id = WorkflowRun.objects.values_list(
+        "ticket_id",
+        flat=True,
+    ).get(pk=execution_reference.workflow_run_id)
+
+    # Consistent lock order:
+    # Ticket -> WorkflowRun -> AgentExecution.
+    Ticket.objects.select_for_update().get(
+        pk=ticket_id,
+    )
+
     WorkflowRun.objects.select_for_update().get(
-        pk=execution_reference.workflow_run_id
+        pk=execution_reference.workflow_run_id,
     )
 
     execution = (
@@ -428,7 +446,18 @@ def complete_agent_execution(
         .get(pk=execution_id)
     )
 
-    # Idempotency: don't duplicate completion events.
+    # Validate ownership before the idempotency check.
+    # An obsolete worker must not receive permission to
+    # continue persistence merely because the execution
+    # has already completed.
+    if (
+        claim_token is not None
+        and execution.claim_token != claim_token
+    ):
+        raise StaleAgentExecutionClaim(
+            "This worker no longer owns the agent execution."
+        )
+
     if execution.status == AgentExecution.Status.SUCCEEDED:
         return execution
 
@@ -462,18 +491,21 @@ def complete_agent_execution(
     return execution
 
 
+
 @transaction.atomic
 def fail_agent_execution(
     execution_id,
     error_code,
     error_message,
+    claim_token=None,
 ):
     """
     Records an agent execution failure.
 
-    Failure does not automatically fail the entire workflow.
-    The workflow orchestrator decides whether to retry,
-    skip or terminate the workflow.
+    When claim_token is supplied, only the current worker
+    holding that claim may fail the execution.
+
+    Failure does not automatically fail the workflow.
     """
 
     execution_reference = (
@@ -482,8 +514,19 @@ def fail_agent_execution(
         .get(pk=execution_id)
     )
 
+    ticket_id = WorkflowRun.objects.values_list(
+        "ticket_id",
+        flat=True,
+    ).get(pk=execution_reference.workflow_run_id)
+
+    # Consistent lock order:
+    # Ticket -> WorkflowRun -> AgentExecution.
+    Ticket.objects.select_for_update().get(
+        pk=ticket_id,
+    )
+
     WorkflowRun.objects.select_for_update().get(
-        pk=execution_reference.workflow_run_id
+        pk=execution_reference.workflow_run_id,
     )
 
     execution = (
@@ -491,6 +534,14 @@ def fail_agent_execution(
         .select_for_update()
         .get(pk=execution_id)
     )
+
+    if (
+        claim_token is not None
+        and execution.claim_token != claim_token
+    ):
+        raise StaleAgentExecutionClaim(
+            "This worker no longer owns the agent execution."
+        )
 
     if execution.status == AgentExecution.Status.FAILED:
         return execution
@@ -530,13 +581,16 @@ def fail_agent_execution(
     return execution
 
 
-def record_transient_agent_failure(execution_id):
+def record_transient_agent_failure(
+    execution_id,
+    claim_token=None,
+):
     """
     Record a temporary provider failure without terminating
     the workflow.
 
-    The Celery task layer decides whether another attempt
-    should be scheduled.
+    The current claim token prevents an obsolete worker
+    from recording failure against a recovered execution.
     """
 
     return fail_agent_execution(
@@ -546,8 +600,8 @@ def record_transient_agent_failure(execution_id):
             "A temporary LLM provider failure occurred. "
             "The Celery task retry policy determines recovery."
         ),
+        claim_token=claim_token,
     )
-
 
 @transaction.atomic
 def skip_agent_execution(execution_id):

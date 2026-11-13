@@ -10,6 +10,7 @@ from .services import (
     ActiveAgentExecutionExists,
     WorkflowNotRunning,
     InvalidAgentExecutionTransition,
+    StaleAgentExecutionClaim,
     create_agent_execution,
     start_agent_execution,
     complete_agent_execution,
@@ -272,6 +273,119 @@ class AgentExecutionServiceTests(TestCase):
             retry.status,
             AgentExecution.Status.QUEUED,
         )
+
+    
+    def test_stale_claim_cannot_complete_recovered_execution(self):
+        execution = self.create_execution()
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="worker-task-123",
+        )
+
+        self.assertTrue(claimed)
+        original_token = execution.claim_token
+
+        recovered, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="worker-task-123",
+            redelivered=True,
+        )
+
+        self.assertTrue(claimed)
+
+        with self.assertRaises(StaleAgentExecutionClaim):
+            complete_agent_execution(
+                execution.id,
+                output_payload={"result": "stale"},
+                claim_token=original_token,
+            )
+
+        execution.refresh_from_db()
+
+        self.assertEqual(
+            execution.status,
+            AgentExecution.Status.RUNNING,
+        )
+
+        self.assertEqual(
+            execution.claim_token,
+            recovered.claim_token,
+        )
+
+    def test_stale_claim_cannot_fail_recovered_execution(self):
+        execution = self.create_execution()
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="worker-task-456",
+        )
+
+        self.assertTrue(claimed)
+        original_token = execution.claim_token
+
+        recovered, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="worker-task-456",
+            redelivered=True,
+        )
+
+        self.assertTrue(claimed)
+
+        with self.assertRaises(StaleAgentExecutionClaim):
+            fail_agent_execution(
+                execution.id,
+                error_code="STALE_WORKER_FAILURE",
+                error_message="Old worker attempted to fail execution.",
+                claim_token=original_token,
+            )
+
+        execution.refresh_from_db()
+
+        self.assertEqual(
+            execution.status,
+            AgentExecution.Status.RUNNING,
+        )
+
+        self.assertEqual(
+            execution.claim_token,
+            recovered.claim_token,
+        )
+
+    def test_current_claim_can_complete_recovered_execution(self):
+        execution = self.create_execution()
+
+        execution, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="worker-task-789",
+        )
+
+        self.assertTrue(claimed)
+
+        recovered, claimed = start_agent_execution(
+            execution.id,
+            celery_task_id="worker-task-789",
+            redelivered=True,
+        )
+
+        self.assertTrue(claimed)
+
+        completed = complete_agent_execution(
+            execution.id,
+            output_payload={"result": "recovered"},
+            claim_token=recovered.claim_token,
+        )
+
+        self.assertEqual(
+            completed.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        self.assertEqual(
+            completed.output_payload,
+            {"result": "recovered"},
+        )
+
 
     def test_skip_queued_execution(self):
         execution = self.create_execution()
