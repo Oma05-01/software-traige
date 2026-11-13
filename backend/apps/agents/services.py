@@ -375,6 +375,25 @@ def fail_agent_execution(
     return execution
 
 
+def record_transient_agent_failure(execution_id):
+    """
+    Record a temporary provider failure without terminating
+    the workflow.
+
+    The Celery task layer decides whether another attempt
+    should be scheduled.
+    """
+
+    return fail_agent_execution(
+        execution_id,
+        error_code="LLM_TRANSIENT_FAILURE",
+        error_message=(
+            "A temporary LLM provider failure occurred. "
+            "The Celery task retry policy determines recovery."
+        ),
+    )
+
+
 @transaction.atomic
 def skip_agent_execution(execution_id):
     """

@@ -1,7 +1,7 @@
 import logging
 
 from django.db import transaction
-
+from apps.agents.llm.base import LLMTransientError
 from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
 from apps.workflow.services import (
@@ -19,6 +19,7 @@ from apps.agents.services import (
     start_agent_execution,
     complete_agent_execution,
     fail_agent_execution,
+    record_transient_agent_failure,
 )
 
 from apps.agents.implementations.product_manager import (
@@ -234,6 +235,7 @@ def persist_product_manager_result(execution, result):
     return completed_execution
 
 
+
 def run_product_manager(workflow_id, celery_task_id=None):
     """Execute the Product Manager for a running feature workflow."""
 
@@ -301,6 +303,26 @@ def run_product_manager(workflow_id, celery_task_id=None):
         )
 
         return completed_execution
+
+    except LLMTransientError:
+        logger.exception(
+            "Product Manager encountered a transient LLM failure "
+            "for workflow %s.",
+            workflow_id,
+        )
+
+        try:
+            record_transient_agent_failure(execution.id)
+
+        except Exception:
+            logger.exception(
+                "Could not persist transient Product Manager failure "
+                "for execution %s.",
+                execution.id,
+            )
+            raise
+
+        raise
 
     except Exception:
         logger.exception(

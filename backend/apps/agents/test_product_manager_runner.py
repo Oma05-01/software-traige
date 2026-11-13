@@ -2,7 +2,7 @@
 from unittest.mock import patch
 
 from django.test import TestCase
-
+from apps.agents.llm.base import LLMTransientError
 from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
 from apps.workflow.services import (
@@ -183,3 +183,76 @@ class ProductManagerRunnerTests(TestCase):
                 agent_type=AgentExecution.AgentType.PRODUCT_MANAGER,
             ).exists()
         )
+
+    @patch("apps.agents.product_manager_runner.assess_feature_request")
+    def test_product_manager_transient_failure_allows_retry(
+        self,
+        mock_assessment,
+    ):
+        successful_result = {
+            "assessment_status": "pending_human_review",
+            "assessment_confidence": "medium",
+            "acceptance_criteria": [
+                "Users can export report data as CSV."
+            ],
+            "considerations": [],
+            "open_questions": [],
+            "requires_human_review": True,
+            "approval_status": "not_approved",
+        }
+
+        mock_assessment.side_effect = [
+            LLMTransientError("Groq request timed out."),
+            successful_result,
+        ]
+
+        with self.assertRaises(LLMTransientError):
+            run_product_manager(self.workflow.id)
+
+        first_execution = AgentExecution.objects.get(
+            workflow_run=self.workflow,
+            agent_type=AgentExecution.AgentType.PRODUCT_MANAGER,
+            attempt=1,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            first_execution.status,
+            AgentExecution.Status.FAILED,
+        )
+
+        self.assertEqual(
+            first_execution.error_code,
+            "LLM_TRANSIENT_FAILURE",
+        )
+
+        self.assertIsNotNone(first_execution.finished_at)
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.RUNNING,
+        )
+
+        self.assertIsNone(self.workflow.finished_at)
+
+        # Second invocation should create attempt 2.
+        second_execution = run_product_manager(self.workflow.id)
+
+        self.assertEqual(second_execution.attempt, 2)
+
+        self.assertEqual(
+            second_execution.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.RUNNING,
+        )
+
+        self.assertEqual(mock_assessment.call_count, 2)
+
+    
