@@ -28,28 +28,54 @@ Write-Host "`n=== POSTGRESQL BACKUP EXPORT ==="
 Write-Host "Namespace: $Namespace"
 Write-Host "Destination: $BackupDirectory"
 
-# Locate the exporter pod.
-$exporterPod = (
-    & kubectl get pods `
-        -n $Namespace `
-        -l app=postgres-backup-exporter `
-        -o jsonpath='{.items[0].metadata.name}'
-).Trim()
 
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($exporterPod)) {
-    throw "Could not locate the backup exporter pod."
+# Wait for the exporter Deployment to become available.
+Write-Host "`nChecking Kubernetes backup exporter..."
+
+$deploymentWaitOutput = & kubectl wait `
+    --for=condition=Available `
+    deployment/postgres-backup-exporter `
+    -n $Namespace `
+    --timeout=120s 2>&1
+
+$deploymentWaitExitCode = $LASTEXITCODE
+
+if ($deploymentWaitExitCode -ne 0) {
+    $details = ($deploymentWaitOutput | Out-String).Trim()
+
+    throw "Backup exporter is unavailable. Ensure Docker Desktop and Kubernetes are running. Details: $details"
 }
 
-# Ensure the exporter is ready.
-& kubectl wait `
+# Retrieve the exporter pod name safely.
+$podOutput = & kubectl get pods `
+    -n $Namespace `
+    -l app=postgres-backup-exporter `
+    -o jsonpath='{.items[0].metadata.name}' 2>&1
+
+$podExitCode = $LASTEXITCODE
+$exporterPod = ($podOutput | Out-String).Trim()
+
+if ($podExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($exporterPod)) {
+    $details = ($podOutput | Out-String).Trim()
+
+    throw "Could not locate a ready backup exporter pod. Details: $details"
+}
+
+# Confirm the selected pod is ready.
+$podWaitOutput = & kubectl wait `
     --for=condition=Ready `
     "pod/$exporterPod" `
     -n $Namespace `
-    --timeout=30s
+    --timeout=60s 2>&1
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Backup exporter is not ready."
+$podWaitExitCode = $LASTEXITCODE
+
+if ($podWaitExitCode -ne 0) {
+    $details = ($podWaitOutput | Out-String).Trim()
+
+    throw "Backup exporter pod is not ready. Details: $details"
 }
+
 
 # List completed backup archives.
 $remoteOutput = @(
