@@ -197,7 +197,7 @@ LLM_TIMEOUT_SECONDS = env.int(
 
 LLM_MAX_RETRIES = env.int(
     "LLM_MAX_RETRIES",
-    default=1,
+    default=0,
 )
 
 LLM_MAX_COMPLETION_TOKENS = env.int(

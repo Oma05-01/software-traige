@@ -13,5 +13,7 @@ data:
   DB_HOST: "postgres"
   DB_PORT: "5432"
 
+  LLM_MAX_RETRIES: "0"
+
   CELERY_BROKER_URL: "redis://redis:6379/0"
   CELERY_TASK_ALWAYS_EAGER: "false"
