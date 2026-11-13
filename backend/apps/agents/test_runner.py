@@ -10,6 +10,7 @@ from apps.workflow.services import (
     transition_workflow,
 )
 from apps.events.models import WorkflowEvent
+from apps.agents.llm.base import LLMTransientError
 
 from .models import AgentExecution
 from .runner import run_receptionist
@@ -237,4 +238,60 @@ class ReceptionistRunnerTests(TestCase):
         self.assertEqual(
             self.ticket.status,
             Ticket.Status.IN_PROGRESS,
+        )
+
+    def test_receptionist_transient_failure_allows_retry(self):
+
+        with patch(
+            "apps.agents.runner.classify_ticket",
+            side_effect=LLMTransientError(
+                "Groq request timed out."
+            ),
+        ):
+            with self.assertRaises(LLMTransientError):
+                run_receptionist(self.workflow.id)
+
+        first_execution = AgentExecution.objects.get(
+            workflow_run=self.workflow,
+            agent_type=AgentExecution.AgentType.RECEPTIONIST,
+            attempt=1,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            first_execution.status,
+            AgentExecution.Status.FAILED,
+        )
+
+        self.assertEqual(
+            first_execution.error_code,
+            "LLM_TRANSIENT_FAILURE",
+        )
+
+        self.assertIsNotNone(first_execution.finished_at)
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.RUNNING,
+        )
+
+        self.assertIsNone(self.workflow.finished_at)
+
+        # A subsequent invocation should create attempt 2.
+        # The deterministic classifier is restored after the patch.
+        second_execution = run_receptionist(self.workflow.id)
+
+        self.assertEqual(second_execution.attempt, 2)
+
+        self.assertEqual(
+            second_execution.status,
+            AgentExecution.Status.SUCCEEDED,
+        )
+
+        self.workflow.refresh_from_db()
+
+        self.assertEqual(
+            self.workflow.status,
+            WorkflowRun.Status.RUNNING,
         )

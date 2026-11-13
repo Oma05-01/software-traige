@@ -4,6 +4,7 @@ from django.db import transaction
 
 from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
+from apps.agents.llm.base import LLMTransientError
 from apps.workflow.services import (
     advance_workflow_stage,
     transition_workflow,
@@ -18,6 +19,7 @@ from .services import (
     start_agent_execution,
     complete_agent_execution,
     fail_agent_execution,
+    record_transient_agent_failure,
 )
 from apps.workflow.services import (
     advance_workflow_stage,
@@ -289,6 +291,26 @@ def run_receptionist(workflow_id, celery_task_id=None):
             execution,
             result,
         )
+
+    except LLMTransientError:
+        logger.exception(
+            "Receptionist encountered a transient LLM failure "
+            "for workflow %s.",
+            workflow_id,
+        )
+
+        try:
+            record_transient_agent_failure(execution.id)
+
+        except Exception:
+            logger.exception(
+                "Could not persist transient Receptionist failure "
+                "for execution %s.",
+                execution.id,
+            )
+            raise
+
+        raise
 
     except Exception:
         logger.exception(
