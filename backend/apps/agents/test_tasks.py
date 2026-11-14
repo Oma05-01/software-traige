@@ -1,5 +1,7 @@
 
+from types import SimpleNamespace
 from unittest.mock import patch
+
 
 from celery.exceptions import Retry
 from django.test import TestCase
@@ -16,7 +18,9 @@ from apps.agents.tasks import (
     process_product_manager_workflow,
     process_support_rep_workflow,
     process_ticket_workflow,
+    _is_redelivered
 )
+from apps.agents.models import AgentExecution
 from apps.events.models import WorkflowEvent
 from apps.tickets.models import Ticket
 from apps.workflow.models import WorkflowRun
@@ -60,16 +64,59 @@ class AgentCeleryRetryTests(TestCase):
                 update_fields=["category"],
             )
 
-    def _invoke_task(self, task, retries):
+
+    def _invoke_task(self, task, retries, delivery_info=None):
         task.push_request(
             id="celery-retry-test-id",
             retries=retries,
+            delivery_info=delivery_info or {},
         )
 
         try:
             return task.run(str(self.workflow.id))
         finally:
             task.pop_request()
+
+
+    def _assert_redelivery_flag_forwarded(
+        self,
+        task,
+        runner_path,
+        stage=None,
+        category=None,
+    ):
+        if stage is not None:
+            self._prepare_running_stage(stage, category)
+
+        fake_execution = SimpleNamespace(
+            id="fake-agent-execution-id",
+            status=AgentExecution.Status.FAILED,
+        )
+
+        with patch(
+            runner_path,
+            return_value=fake_execution,
+        ) as runner_mock:
+
+            for redelivered in (True, False):
+                self._invoke_task(
+                    task,
+                    retries=0,
+                    delivery_info={
+                        "redelivered": redelivered,
+                    },
+                )
+
+        self.assertEqual(
+            [
+                call.kwargs["redelivered"]
+                for call in runner_mock.call_args_list
+            ],
+            [True, False],
+        )
+
+        self.assertEqual(runner_mock.call_count, 2)
+
 
     def _assert_retry_scheduled(
         self,
@@ -297,4 +344,46 @@ class AgentCeleryRetryTests(TestCase):
         self.assertEqual(
             self.workflow.status,
             WorkflowRun.Status.RUNNING,
+        )
+
+
+    def test_redelivery_detector_defaults_to_false(self):
+        task = SimpleNamespace(
+            request=SimpleNamespace(delivery_info=None)
+        )
+
+        self.assertFalse(_is_redelivered(task))
+
+
+    def test_receptionist_task_forwards_redelivery_flag(self):
+        self._assert_redelivery_flag_forwarded(
+            task=process_ticket_workflow,
+            runner_path="apps.agents.tasks.run_receptionist",
+        )
+
+
+    def test_debugger_task_forwards_redelivery_flag(self):
+        self._assert_redelivery_flag_forwarded(
+            task=process_debugger_workflow,
+            runner_path="apps.agents.tasks.run_debugger",
+            stage=WorkflowRun.Stage.DEBUGGER,
+            category=Ticket.Category.BUG,
+        )
+
+
+    def test_support_rep_task_forwards_redelivery_flag(self):
+        self._assert_redelivery_flag_forwarded(
+            task=process_support_rep_workflow,
+            runner_path="apps.agents.tasks.run_support_rep",
+            stage=WorkflowRun.Stage.SUPPORT_REP,
+            category=Ticket.Category.BUG,
+        )
+
+
+    def test_product_manager_task_forwards_redelivery_flag(self):
+        self._assert_redelivery_flag_forwarded(
+            task=process_product_manager_workflow,
+            runner_path="apps.agents.tasks.run_product_manager",
+            stage=WorkflowRun.Stage.PRODUCT_MANAGER,
+            category=Ticket.Category.FEATURE,
         )
