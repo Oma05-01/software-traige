@@ -15,7 +15,7 @@ spec:
       labels:
         app: worker
     spec:
-      terminationGracePeriodSeconds: 60
+      terminationGracePeriodSeconds: 240
       containers:
         - name: worker
           image: software-triage-worker:local

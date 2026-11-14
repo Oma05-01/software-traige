@@ -116,6 +116,9 @@ def dispatch_support_rep_workflow(workflow_id):
     bind=True,
     name="apps.agents.process_ticket_workflow",
     ignore_result=True,
+    acks_late=True,
+    reject_on_worker_lost=True,
+    time_limit=180,
 )
 def process_ticket_workflow(self, workflow_id):
     """
@@ -187,6 +190,9 @@ def process_ticket_workflow(self, workflow_id):
     bind=True,
     name="apps.agents.process_debugger_workflow",
     ignore_result=True,
+    acks_late=True,
+    reject_on_worker_lost=True,
+    time_limit=180,
 )
 def process_debugger_workflow(self, workflow_id):
     """
@@ -243,6 +249,9 @@ def process_debugger_workflow(self, workflow_id):
     bind=True,
     name="apps.agents.process_support_rep_workflow",
     ignore_result=True,
+    acks_late=True,
+    reject_on_worker_lost=True,
+    time_limit=180,
 )
 def process_support_rep_workflow(self, workflow_id):
     """
@@ -284,6 +293,9 @@ def process_support_rep_workflow(self, workflow_id):
     bind=True,
     name="apps.agents.process_product_manager_workflow",
     ignore_result=True,
+    acks_late=True,
+    reject_on_worker_lost=True,
+    time_limit=180,
 )
 def process_product_manager_workflow(self, workflow_id):
     """

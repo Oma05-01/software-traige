@@ -492,12 +492,15 @@ def complete_agent_execution(
 
 
 
+
 @transaction.atomic
 def fail_agent_execution(
     execution_id,
     error_code,
     error_message,
     claim_token=None,
+    fail_workflow=False,
+    workflow_failure_source=WorkflowEvent.Source.SYSTEM,
 ):
     """
     Records an agent execution failure.
@@ -505,7 +508,8 @@ def fail_agent_execution(
     When claim_token is supplied, only the current worker
     holding that claim may fail the execution.
 
-    Failure does not automatically fail the workflow.
+    When fail_workflow is True, the running workflow is
+    also marked as failed in the same transaction.
     """
 
     execution_reference = (
@@ -525,8 +529,10 @@ def fail_agent_execution(
         pk=ticket_id,
     )
 
-    WorkflowRun.objects.select_for_update().get(
-        pk=execution_reference.workflow_run_id,
+    workflow = (
+        WorkflowRun.objects
+        .select_for_update()
+        .get(pk=execution_reference.workflow_run_id)
     )
 
     execution = (
@@ -535,6 +541,7 @@ def fail_agent_execution(
         .get(pk=execution_id)
     )
 
+    # Validate claim ownership before changing state.
     if (
         claim_token is not None
         and execution.claim_token != claim_token
@@ -544,6 +551,18 @@ def fail_agent_execution(
         )
 
     if execution.status == AgentExecution.Status.FAILED:
+        if (
+            fail_workflow
+            and workflow.status == WorkflowRun.Status.RUNNING
+        ):
+            from apps.workflow.services import transition_workflow
+
+            transition_workflow(
+                workflow.id,
+                WorkflowRun.Status.FAILED,
+                source=workflow_failure_source,
+            )
+
         return execution
 
     if execution.status not in {
@@ -577,6 +596,18 @@ def fail_agent_execution(
             "error_code": execution.error_code,
         },
     )
+
+    if (
+        fail_workflow
+        and workflow.status == WorkflowRun.Status.RUNNING
+    ):
+        from apps.workflow.services import transition_workflow
+
+        transition_workflow(
+            workflow.id,
+            WorkflowRun.Status.FAILED,
+            source=workflow_failure_source,
+        )
 
     return execution
 

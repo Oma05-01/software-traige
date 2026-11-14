@@ -247,6 +247,16 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_CONNECTION_MAX_RETRIES = 5
 
+# Limit each worker process to one reserved task.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# Agent tasks have a 180-second hard execution limit.
+# Redis keeps unacknowledged messages invisible for 300 seconds,
+# providing a 120-second recovery margin.
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "visibility_timeout": 300,
+}
+
 # Used by automated tests to run tasks immediately
 # without needing an actual Redis server.
 CELERY_TASK_ALWAYS_EAGER = env.bool(

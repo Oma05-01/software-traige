@@ -1,7 +1,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import patch
-
+from config.celery import app as celery_app
 
 from celery.exceptions import Retry
 from django.test import TestCase
@@ -387,3 +387,38 @@ class AgentCeleryRetryTests(TestCase):
             stage=WorkflowRun.Stage.PRODUCT_MANAGER,
             category=Ticket.Category.FEATURE,
         )
+
+    
+    def test_agent_tasks_enable_late_ack_and_worker_loss_recovery(self):
+        agent_tasks = (
+            process_ticket_workflow,
+            process_debugger_workflow,
+            process_support_rep_workflow,
+            process_product_manager_workflow,
+        )
+
+        for task in agent_tasks:
+            with self.subTest(task=task.name):
+                self.assertTrue(task.acks_late)
+                self.assertTrue(task.reject_on_worker_lost)
+                self.assertEqual(task.time_limit, 180)
+
+
+    def test_redis_visibility_timeout_and_worker_prefetch(self):
+        self.assertEqual(
+            celery_app.conf.broker_transport_options.get(
+                "visibility_timeout"
+            ),
+            300,
+        )
+
+        self.assertEqual(
+            celery_app.conf.worker_prefetch_multiplier,
+            1,
+        )
+
+
+    def test_late_acknowledgement_is_not_enabled_globally(self):
+        self.assertFalse(celery_app.conf.task_acks_late)
+        self.assertFalse(celery_app.conf.task_reject_on_worker_lost)
+
